@@ -1,0 +1,57 @@
+[project]
+name = "tokengate"
+version = "0.1.0"
+description = "Multi-tenant LLM gateway: auth, rate limits, budgets, caching, failover, cost attribution."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+# This is an application, not a library: no wheel is built, `app/` is imported from the repo root.
+package = false
+
+# ---------- ruff ----------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "B",        # bugbear
+  "UP",       # pyupgrade
+  "SIM",      # simplify
+  "ASYNC",    # blocking calls inside async code
+  "S",        # bandit security checks
+  "RUF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is how pytest works
+
+# ---------- mypy ----------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["app", "tests"]
+warn_unreachable = true
+
+# ---------- pytest ----------
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers --strict-config"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
+]

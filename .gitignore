@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets: only .env.example is committed
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*-credentials.json
+service-account*.json
+
+# Load-test and eval outputs (summaries go in docs/RESULTS.md with the command that produced them)
+loadtest/out/
+evals/out/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
