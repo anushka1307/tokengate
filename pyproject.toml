@@ -4,7 +4,13 @@ version = "0.1.0"
 description = "Multi-tenant LLM gateway: auth, rate limits, budgets, caching, failover, cost attribution."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.162.4",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.16.2",
+    "structlog>=26.1.0",
+    "uvicorn[standard]>=0.54.0",
+]
 
 [tool.uv]
 # This is an application, not a library: no wheel is built, `app/` is imported from the repo root.
@@ -14,7 +20,6 @@ package = false
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["app", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -31,6 +36,9 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]  # assert is how pytest works
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
 
 # ---------- mypy ----------
 [tool.mypy]
@@ -49,6 +57,7 @@ addopts = "-ra --strict-markers --strict-config"
 
 [dependency-groups]
 dev = [
+    "asgi-lifespan>=2.1.0",
     "mypy>=2.4.1",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",

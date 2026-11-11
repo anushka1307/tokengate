@@ -16,3 +16,10 @@ uv sync                      # create .venv from uv.lock
 uv run pre-commit install    # ruff, mypy, gitleaks on every commit
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest
 ```
+
+## Run locally
+```bash
+uv run uvicorn app.main:create_app --factory --no-access-log
+curl -i localhost:8000/healthz
+curl -i localhost:8000/readyz
+```
