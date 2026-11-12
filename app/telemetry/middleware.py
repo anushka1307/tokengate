@@ -16,6 +16,8 @@ import structlog
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.telemetry.metrics import Metrics, route_label
+
 REQUEST_ID_HEADER = "X-Request-Id"
 OVERHEAD_HEADER = "X-Gateway-Overhead-Ms"
 
@@ -59,6 +61,16 @@ def track_provider_wait() -> Iterator[None]:
             timing.provider_wait_s += time.perf_counter() - started
 
 
+def current_provider_wait_s() -> float:
+    """Provider wait accumulated so far in the current request (0 outside a request)."""
+    timing = _current_timing.get()
+    return timing.provider_wait_s if timing is not None else 0.0
+
+
+# HTTP allows arbitrary method names; keep the metrics label to a fixed set.
+_KNOWN_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+
+
 def _incoming_request_id(scope: Scope) -> str | None:
     for name, value in scope["headers"]:
         if name == _REQUEST_ID_HEADER_RAW:
@@ -68,8 +80,9 @@ def _incoming_request_id(scope: Scope) -> str | None:
 
 
 class RequestContextMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, metrics: Metrics | None = None) -> None:
         self.app = app
+        self.metrics = metrics
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -96,6 +109,8 @@ class RequestContextMiddleware:
         # and those must not leak into the next request served by the same task.
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
+        if self.metrics is not None:
+            self.metrics.inflight.inc()
         try:
             await self.app(scope, receive, send_with_headers)
         finally:
@@ -108,5 +123,18 @@ class RequestContextMiddleware:
                 duration_ms=round(timing.total_ms(now), 2),
                 overhead_ms=round(timing.overhead_ms(now), 2),
             )
+            if self.metrics is not None:
+                self._record(scope, status_code, timing, now)
             structlog.contextvars.clear_contextvars()
             _current_timing.reset(timing_token)
+
+    def _record(self, scope: Scope, status_code: int, timing: RequestTiming, now: float) -> None:
+        assert self.metrics is not None  # noqa: S101 - only called when metrics are set
+        route = route_label(scope["path"])
+        method = scope["method"] if scope["method"] in _KNOWN_METHODS else "other"
+        self.metrics.inflight.dec()
+        self.metrics.requests.labels(
+            route=route, method=method, status_class=f"{status_code // 100}xx"
+        ).inc()
+        self.metrics.request_duration.labels(route=route).observe(timing.total_ms(now) / 1000)
+        self.metrics.gateway_overhead.labels(route=route).observe(timing.overhead_ms(now) / 1000)

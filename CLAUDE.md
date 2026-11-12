@@ -12,3 +12,6 @@
 ## Commands
 `uv sync` · `uv run ruff check .` · `uv run ruff format --check .` · `uv run mypy` · `uv run pytest`
 Container images: `docker build --platform linux/amd64` (dev machine is Apple Silicon; Cloud Run is amd64).
+
+## Git
+- Do not add `Co-Authored-By: Claude` (or any AI co-author) trailers to commit messages. Commits are authored by anushka1307 only.

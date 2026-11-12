@@ -7,6 +7,7 @@ Request path (Phase 1): validate (schemas) -> limits -> route alias to provider 
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 import structlog
 from fastapi import APIRouter, Request, Response
@@ -35,9 +36,33 @@ from app.providers.base import (
     StreamEvent,
 )
 from app.state import get_state
-from app.telemetry.middleware import track_provider_wait
+from app.telemetry.metrics import Metrics
+from app.telemetry.middleware import current_provider_wait_s, track_provider_wait
 
 router = APIRouter(tags=["chat"])
+
+
+@dataclass(slots=True)
+class _CallRecorder:
+    """Records one provider call's outcome, wait time and tokens in metrics, exactly once."""
+
+    metrics: Metrics
+    provider: str
+    model: str  # the alias: bounded by the configured routes
+    _done: bool = False
+
+    def finish(self, outcome: str, usage: ProviderUsage | None = None) -> None:
+        if self._done:
+            return
+        self._done = True
+        m = self.metrics
+        m.provider_requests.labels(self.provider, self.model, outcome).inc()
+        m.provider_wait.labels(self.provider).observe(current_provider_wait_s())
+        if usage is not None:
+            m.tokens.labels(self.provider, self.model, "prompt").inc(usage.prompt_tokens)
+            m.tokens.labels(self.provider, self.model, "completion").inc(usage.completion_tokens)
+
+
 log = structlog.get_logger("tokengate.chat")
 
 _PROVIDER_ERRORS: dict[str, tuple[int, str, str]] = {
@@ -63,18 +88,28 @@ async def create_chat_completion(body: ChatCompletionRequest, request: Request) 
     created = int(time.time())
     headers = {"X-Provider": provider.name, "X-Cache": "miss"}
     structlog.contextvars.bind_contextvars(model=body.model, provider=provider.name)
+    recorder = _CallRecorder(state.metrics, provider.name, body.model)
 
     if body.stream:
         include_usage = body.stream_options is not None and body.stream_options.include_usage
         return await _start_stream(
-            provider, provider_request, completion_id, created, body.model, include_usage, headers
+            provider,
+            provider_request,
+            completion_id,
+            created,
+            body.model,
+            include_usage,
+            headers,
+            recorder,
         )
 
     try:
         with track_provider_wait():
             result = await provider.complete(provider_request)
     except ProviderError as exc:
+        recorder.finish(exc.kind)
         raise _provider_failure(exc) from exc
+    recorder.finish("success", result.usage)
 
     response = ChatCompletionResponse(
         id=completion_id,
@@ -120,6 +155,7 @@ async def _start_stream(
     model: str,
     include_usage: bool,
     headers: dict[str, str],
+    recorder: _CallRecorder,
 ) -> Response:
     events = provider.stream(provider_request)
     # Wait for the first event BEFORE sending "200 OK", so a provider that fails immediately
@@ -130,18 +166,28 @@ async def _start_stream(
     except BaseException as exc:
         await events.aclose()
         if isinstance(exc, ProviderError):
+            recorder.finish(exc.kind)
             raise _provider_failure(exc) from exc
         if isinstance(exc, StopAsyncIteration):
+            recorder.finish("upstream_error")
             raise APIError(
                 502,
                 "The model provider returned an empty stream.",
                 code="upstream_error",
                 error_type="api_error",
             ) from exc
+        recorder.finish("cancelled")
         raise
 
-    body = _sse_body(first, events, completion_id, created, model, include_usage)
-    return EventStreamResponse(body, headers=headers)
+    body = _sse_body(first, events, completion_id, created, model, include_usage, recorder)
+
+    async def cleanup() -> None:
+        # Runs even if the body never started (e.g. the client vanished before headers went
+        # out), when closing the unstarted body would not reach its own cleanup code.
+        await events.aclose()
+        recorder.finish("cancelled")  # no-op if the stream already recorded its outcome
+
+    return EventStreamResponse(body, headers=headers, on_close=cleanup)
 
 
 async def _sse_body(
@@ -151,6 +197,7 @@ async def _sse_body(
     created: int,
     model: str,
     include_usage: bool,
+    recorder: _CallRecorder,
 ) -> AsyncGenerator[bytes, None]:
     def chunk(
         delta: ChunkDelta | None = None,
@@ -165,10 +212,15 @@ async def _sse_body(
         )
         return sse_event(payload.model_dump(mode="json"))
 
+    # Unless the stream finishes or the provider fails, the client went away (cancelled).
+    outcome = "cancelled"
+    usage: ProviderUsage | None = None
     try:
         yield chunk(ChunkDelta(role="assistant", content=""))
         event: StreamEvent | None = first
         while event is not None:
+            if event.usage is not None:
+                usage = event.usage
             if event.text_delta:
                 yield chunk(ChunkDelta(content=event.text_delta))
             if event.finish_reason is not None:
@@ -183,14 +235,17 @@ async def _sse_body(
                 event = None
             except ProviderError as exc:
                 # "200 OK" is already sent; report the failure inside the stream and stop.
+                outcome = exc.kind
                 failure = _provider_failure(exc)
                 yield sse_event(
                     error_body(failure.message, error_type=failure.error_type, code=failure.code)
                 )
                 return
+        outcome = "success"
         yield DONE
     finally:
         await events.aclose()
+        recorder.finish(outcome, usage)
 
 
 def _usage(usage: ProviderUsage) -> Usage:

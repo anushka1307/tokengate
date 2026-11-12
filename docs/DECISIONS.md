@@ -96,3 +96,23 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** echo the prompt; random text; text derived from a hash of the request.
 - **Choice:** text derived from a SHA-256 fingerprint of the request (stable across processes, unlike `hash()`); configurable latency and failure rates, with an optional seed so chaos runs are reproducible. Token counts are word counts.
 - **Why:** the same question always gets the same answer, which cache tests need; the prompt is never echoed into responses or logs. Word counts are explicitly fake and never used for billing; real counts come from provider usage data (Phase 4).
+
+## D20. Metrics: Prometheus, bounded labels, one registry per app
+- **Options:** Prometheus pull (`prometheus-client`); OpenTelemetry metrics; logs-only.
+- **Choice:** `prometheus-client` with a per-app `CollectorRegistry`. Labels come only from fixed sets: known routes (else `"other"`), known HTTP methods (else `"other"`), status class, provider name, configured model alias, outcome. Overhead buckets start at 0.5 ms.
+- **Why:** an unbounded label (raw URL, user ID, prompt) lets any scanner create unlimited time series and copies private data into dashboards; tests prove random paths and a prompt canary never appear. A per-app registry keeps tests isolated. Per-tenant labels wait for Phase 2, and only with a bounded tenant set. OpenTelemetry joins in Phase 6.
+
+## D21. Protecting /metrics
+- **Options:** open endpoint; separate port; bearer token; push instead of pull.
+- **Choice:** `TOKENGATE_METRICS_TOKEN` (a `SecretStr`, ≥16 chars, compared in constant time). No token: open in local/test, 404 in prod.
+- **Why:** Cloud Run exposes one public port, so a separate metrics port isn't available, and an open page would publish traffic and error rates. Prod fails closed if the token is forgotten. Push to Grafana Cloud via OpenTelemetry is the Phase 6 option.
+
+## D22. Container: multi-stage uv build, non-root, digest-pinned, `python -m app`
+- **Options:** single-stage image; distroless; slim multi-stage.
+- **Choice:** `python:3.12-slim` (pinned by digest) with `uv sync --locked --no-dev` in a build stage; the runtime stage has only the venv and `app/`, runs as UID 10001, and starts with `python -m app` (exec form, so Python gets SIGTERM directly).
+- **Why:** reproducible (lockfile + digests), small attack surface (no build tools, no tests, no `.env` thanks to an allow-list `.dockerignore`), and graceful shutdown inside Cloud Run's 10 s SIGTERM window (`TOKENGATE_GRACEFUL_SHUTDOWN_TIMEOUT_S=8`). `python -m app` reads `PORT`, which an exec-form CMD can't expand. Distroless was set aside for now because debugging without a shell is harder at this stage. The image is built and smoke-tested in CI only (no local Docker yet); CI writes the measured image size to the job summary.
+
+## D23. Cloud Run cost guardrails, decided before the first deploy
+- **Options:** defaults; min-instances 1 for no cold starts; scale-to-zero with caps.
+- **Choice:** `minScale 0`, `maxScale 2`, 1 vCPU / 512 MiB, CPU billed only during requests, startup probe on `/readyz`, liveness on `/healthz`, metrics token from Secret Manager (pinned version), dedicated runtime service account with only `secretAccessor` on that secret.
+- **Why:** an idle portfolio service should cost nothing, and a traffic spike or loop can't scale the bill past two instances. Cold starts are the accepted trade-off. Field names were checked against Google's current Cloud Run YAML reference. Not deployed until Phase 6, after a budget alert exists.

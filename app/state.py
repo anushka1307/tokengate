@@ -9,6 +9,7 @@ from starlette.applications import Starlette
 from app.config import Settings
 from app.providers.base import Provider
 from app.providers.router import ModelRouter
+from app.telemetry.metrics import Metrics
 
 
 @dataclass(slots=True)
@@ -19,6 +20,7 @@ class AppState:
     http_client: httpx.AsyncClient | None = None
     providers: dict[str, Provider] = field(default_factory=dict)
     model_router: ModelRouter | None = None
+    metrics: Metrics = field(default_factory=Metrics)
     ready: bool = False
 
 
