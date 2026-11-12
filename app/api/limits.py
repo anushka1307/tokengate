@@ -93,11 +93,11 @@ class BodySizeLimitMiddleware:
 
 def enforce_request_limits(request: ChatCompletionRequest, settings: Settings) -> None:
     """Raise ``APIError(400)`` if the request breaks a configured limit."""
-    if request.model not in settings.allowed_models:
+    if request.model not in settings.model_routes:
         # The client's value isn't echoed back; the allowlist is not secret.
         raise APIError(
             400,
-            "The requested model is not available. Allowed: " + ", ".join(settings.allowed_models),
+            "The requested model is not available. Allowed: " + ", ".join(settings.model_routes),
             code="model_not_found",
             param="model",
         )

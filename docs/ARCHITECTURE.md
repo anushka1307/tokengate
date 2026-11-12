@@ -1,6 +1,8 @@
 # Architecture
 
-TODO: request-path diagram (auth → rate limit → cache → provider → accounting) once Phase 1 is in place.
+TODO: request-path diagram (auth → rate limit → cache → provider → accounting) at the end of Phase 1.
+
+Today (Phase 1, step 1.4): request context → body-size limit → schema validation → request limits → model router → provider (MockProvider) → JSON or SSE response.
 
 ## Request path (target)
 1. Auth: hashed tenant API key lookup

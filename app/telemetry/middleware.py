@@ -92,19 +92,21 @@ class RequestContextMiddleware:
             await send(message)
 
         timing_token = _current_timing.set(timing)
+        # Start from a clean logging context: handlers may bind more fields (model, provider),
+        # and those must not leak into the next request served by the same task.
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=request_id)
         try:
-            with structlog.contextvars.bound_contextvars(request_id=request_id):
-                try:
-                    await self.app(scope, receive, send_with_headers)
-                finally:
-                    now = time.perf_counter()
-                    _access_log.info(
-                        "request",
-                        method=scope["method"],
-                        path=scope["path"],  # no query string: it may carry secrets
-                        status=status_code,
-                        duration_ms=round(timing.total_ms(now), 2),
-                        overhead_ms=round(timing.overhead_ms(now), 2),
-                    )
+            await self.app(scope, receive, send_with_headers)
         finally:
+            now = time.perf_counter()
+            _access_log.info(
+                "request",
+                method=scope["method"],
+                path=scope["path"],  # no query string: it may carry secrets
+                status=status_code,
+                duration_ms=round(timing.total_ms(now), 2),
+                overhead_ms=round(timing.overhead_ms(now), 2),
+            )
+            structlog.contextvars.clear_contextvars()
             _current_timing.reset(timing_token)
