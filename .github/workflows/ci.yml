@@ -53,3 +53,59 @@ jobs:
 
       - name: gitleaks
         run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact -v /repo
+
+  container:
+    # Builds the real image (same platform as Cloud Run) and smoke-tests it. This is the only
+    # place the image is built for now (no local Docker).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      METRICS_TOKEN: ci-only-metrics-token-not-a-secret
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image (linux/amd64, like Cloud Run)
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: docker build --platform linux/amd64 -f deploy/Dockerfile -t tokengate:ci .
+
+      - name: Image facts (measured here, never hand-written)
+        run: |
+          size=$(docker image inspect tokengate:ci --format '{{.Size}}')
+          user=$(docker image inspect tokengate:ci --format '{{.Config.User}}')
+          {
+            echo "### Container image"
+            echo "- size: $((size / 1024 / 1024)) MiB ($size bytes)"
+            echo "- runs as: $user"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$user" = "10001:10001" || { echo "image must not run as root"; exit 1; }
+
+      - name: Start container (read-only filesystem)
+        run: |
+          docker run -d --name tokengate --read-only -p 8080:8080 \
+            -e TOKENGATE_METRICS_TOKEN="$METRICS_TOKEN" tokengate:ci
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 30); do
+            curl -fsS --max-time 2 http://localhost:8080/readyz && exit 0
+            sleep 1
+          done
+          echo "container never became ready"; exit 1
+
+      - name: Smoke test
+        env:
+          BASE_URL: http://localhost:8080
+        run: scripts/smoke.sh
+
+      - name: Graceful shutdown on SIGTERM
+        run: |
+          docker stop --time 10 tokengate
+          docker logs tokengate 2>&1 | grep -q '"shutdown_complete"' \
+            || { echo "no clean shutdown logged"; exit 1; }
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker logs tokengate || true

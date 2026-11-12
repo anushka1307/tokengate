@@ -1,6 +1,7 @@
 """App factory and lifespan.
 
-Run locally:  uv run uvicorn app.main:create_app --factory --no-access-log
+Run locally:  uv run python -m app          (reads PORT; see app/__main__.py)
+         or:  uv run uvicorn app.main:create_app --factory --no-access-log
 """
 
 from collections.abc import AsyncIterator, Mapping
@@ -19,6 +20,7 @@ from app.providers.base import Provider
 from app.providers.mock import MockConfig, MockProvider
 from app.providers.router import ModelRouter
 from app.state import AppState, get_state
+from app.telemetry import metrics
 from app.telemetry.logging import configure_logging
 from app.telemetry.middleware import RequestContextMiddleware
 
@@ -93,12 +95,14 @@ def create_app(
         redoc_url=None,
         openapi_url=None if is_prod else "/openapi.json",
     )
-    app.state.tg = AppState(settings=settings, provider_overrides=providers)
+    state = AppState(settings=settings, provider_overrides=providers)
+    app.state.tg = state
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(metrics.router)
     install_error_handlers(app)
     # Starlette runs the LAST-added middleware outermost. Request context must wrap the size
     # limit so that 413 responses still get a request ID and an access-log line.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
-    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(RequestContextMiddleware, metrics=state.metrics)
     return app

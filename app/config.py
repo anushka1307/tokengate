@@ -6,7 +6,7 @@ Every variable is prefixed with ``TOKENGATE_``. Invalid values fail at startup, 
 import re
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     mock_error_rate: float = Field(default=0.0, ge=0, le=1)
     mock_mid_stream_error_rate: float = Field(default=0.0, ge=0, le=1)
     mock_seed: int | None = None
+
+    # /metrics needs "Authorization: Bearer <token>" when set. With no token, /metrics is open
+    # in local/test and disabled (404) in prod (D21). SecretStr keeps it out of logs and reprs.
+    metrics_token: SecretStr | None = Field(default=None, min_length=16)
+
+    # uvicorn's graceful-shutdown limit. Cloud Run sends SIGTERM and kills the container
+    # 10 s later, so this must stay below 10 there (D22).
+    graceful_shutdown_timeout_s: float = Field(default=8.0, gt=0, le=60)
 
     # Request limits (D11-D14).
     max_body_bytes: int = Field(default=1_048_576, gt=0, le=10 * 1_048_576)

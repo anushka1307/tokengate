@@ -1,0 +1,8 @@
+# Only pyproject.toml, uv.lock and app/ are needed in the image. Everything else stays out,
+# especially secrets (.env) and git history.
+*
+!pyproject.toml
+!uv.lock
+!app/
+**/__pycache__
+**/*.pyc

@@ -1,0 +1,67 @@
+# Cloud Run service definition (docs/DECISIONS.md, D23). NOT deployed yet: deployment is Phase 6.
+# Field names checked against docs.cloud.google.com/run/docs/reference/yaml/v1 (2026-11).
+#
+# Replace the placeholders before use:
+#   PROJECT_ID, IMAGE_DIGEST, METRICS_SECRET_VERSION
+# Deploy (Phase 6):  gcloud run services replace deploy/cloudrun.yaml --region us-east1
+#
+# COST GUARDRAILS: scales to zero when idle (no requests -> no instance charges), at most 2
+# instances, 1 vCPU / 512 MiB, CPU only billed while handling requests. Set a GCP budget
+# alert before the first deploy.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: tokengate
+  labels:
+    cloud.googleapis.com/location: us-east1
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"  # scale to zero: free when idle
+        autoscaling.knative.dev/maxScale: "2"  # hard cap on instances (and on the bill)
+        run.googleapis.com/cpu-throttling: "true"  # CPU billed only during requests
+        run.googleapis.com/startup-cpu-boost: "true"  # faster cold starts
+    spec:
+      containerConcurrency: 80
+      timeoutSeconds: 300  # long enough for streamed completions
+      # A dedicated identity with no project-wide roles; it only gets secretAccessor on the
+      # one metrics secret (least privilege).
+      serviceAccountName: tokengate-runtime@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - name: gateway
+          # Deploy by digest, not tag, so the running image can't change underneath us.
+          image: us-east1-docker.pkg.dev/PROJECT_ID/tokengate/tokengate@sha256:IMAGE_DIGEST
+          ports:
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: TOKENGATE_ENV
+              value: prod
+            - name: TOKENGATE_METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: tokengate-metrics-token
+                  key: METRICS_SECRET_VERSION  # pin a version number, not "latest"
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # Traffic is sent only after /readyz says the app finished starting.
+          # Window: 2 s x 15 = 30 s (Cloud Run allows up to 600 s).
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 15
+          # Restart only if the process stops answering; /healthz never checks dependencies,
+          # so an upstream outage doesn't restart every instance at once (D9).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3

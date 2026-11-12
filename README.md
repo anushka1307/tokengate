@@ -19,7 +19,7 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pyt
 
 ## Run locally
 ```bash
-uv run uvicorn app.main:create_app --factory --no-access-log
+uv run python -m app            # listens on $PORT (default 8000)
 curl -i localhost:8000/healthz
 curl -i localhost:8000/readyz
 
@@ -33,3 +33,17 @@ curl -N localhost:8000/v1/chat/completions -H 'content-type: application/json' \
 ```
 
 Any OpenAI SDK works too: point `base_url` at `http://localhost:8000/v1` (any API key until Phase 2).
+
+## Container
+The image is built and smoke-tested by CI on every pull request (`container` job), for
+`linux/amd64` like Cloud Run. Locally, with Docker running:
+```bash
+docker compose up --build        # gateway on localhost:8000
+scripts/smoke.sh                 # BASE_URL / METRICS_TOKEN env vars to point it elsewhere
+```
+`deploy/cloudrun.yaml` describes the Cloud Run service (scale to zero, max 2 instances). It is
+not deployed yet.
+
+## Metrics
+`GET /metrics` (Prometheus format). Requires `Authorization: Bearer $TOKENGATE_METRICS_TOKEN`
+when that is set; without a token it is open locally and disabled in prod.

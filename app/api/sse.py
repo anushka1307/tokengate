@@ -13,7 +13,7 @@ provider stream is always closed, so we stop paying for tokens nobody will read.
 """
 
 import json
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from typing import Any
 
 import anyio
@@ -32,7 +32,10 @@ def sse_event(payload: Mapping[str, Any]) -> bytes:
 
 class EventStreamResponse(StreamingResponse):
     def __init__(
-        self, events: AsyncGenerator[bytes, None], headers: Mapping[str, str] | None = None
+        self,
+        events: AsyncGenerator[bytes, None],
+        headers: Mapping[str, str] | None = None,
+        on_close: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         super().__init__(
             events,
@@ -44,6 +47,7 @@ class EventStreamResponse(StreamingResponse):
             },
         )
         self._events = events
+        self._on_close = on_close
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         client_gone = False
@@ -81,6 +85,8 @@ class EventStreamResponse(StreamingResponse):
                 task_group.cancel_scope.cancel()
         finally:
             with anyio.CancelScope(shield=True):
-                await self._events.aclose()  # closes the provider stream too
+                await self._events.aclose()  # closes the provider stream too, if it started
+                if self._on_close is not None:
+                    await self._on_close()  # always runs, started or not
             if client_gone:
                 log.info("client_disconnected_mid_stream")
