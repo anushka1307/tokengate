@@ -1,5 +1,8 @@
 # Install once per clone:  uv run pre-commit install
+#   (installs both the pre-commit and the commit-msg hooks, see below)
 # Run on everything:       uv run pre-commit run --all-files
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]  # file checks run once, not again at the commit-msg stage
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -34,3 +37,9 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      - id: no-ai-attribution
+        name: no AI attribution in commit message
+        entry: scripts/check_attribution.sh
+        language: script
+        stages: [commit-msg]

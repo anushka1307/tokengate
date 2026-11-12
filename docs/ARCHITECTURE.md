@@ -2,7 +2,7 @@
 
 TODO: request-path diagram (auth → rate limit → cache → provider → accounting) at the end of Phase 1.
 
-Today (Phase 1, step 1.4): request context → body-size limit → schema validation → request limits → model router → provider (MockProvider) → JSON or SSE response.
+Today (end of Phase 1): request context (request ID, timing, metrics) → body-size limit → schema validation → request limits → model router → provider (MockProvider) → JSON or SSE response. Also: `/healthz`, `/readyz`, protected `/metrics`; container built and smoke-tested in CI.
 
 ## Request path (target)
 1. Auth: hashed tenant API key lookup
@@ -15,8 +15,8 @@ Today (Phase 1, step 1.4): request context → body-size limit → schema valida
 ## Phases
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | Skeleton, OpenAI-compatible endpoint, MockProvider, health/metrics, container | in progress |
-| 2 | Auth + rate limits + budgets | TODO |
+| 1 | Skeleton, OpenAI-compatible endpoint, MockProvider, health/metrics, container | done |
+| 2 | Auth + rate limits + budgets | in progress |
 | 3 | Real providers + resilience | TODO |
 | 4 | Cost accounting | TODO |
 | 5 | Exact + semantic cache, false-hit evals | TODO |
