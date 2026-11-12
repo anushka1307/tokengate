@@ -54,6 +54,41 @@ jobs:
       - name: gitleaks
         run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact -v /repo
 
+  attribution:
+    # Commits and PR descriptions must not credit an AI assistant (see CLAUDE.md "Git").
+    # On pull requests this blocks the merge; on main it also checks GitHub's own merge commit.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check commit messages and PR description
+        env:
+          # Passed via env, never interpolated into the script: PR text is untrusted input.
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          dir=$(mktemp -d)
+          if [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            range="$HEAD_SHA -1"   # first push of a branch: check just the head commit
+          else
+            range="${BASE_SHA}..${HEAD_SHA}"
+          fi
+          for sha in $(git rev-list $range); do
+            git log -1 --format=%B "$sha" > "$dir/commit-$sha.txt"
+          done
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            printf '%s\n' "$PR_BODY" > "$dir/pr-description.txt"
+          fi
+          echo "Checking $(ls "$dir" | wc -l) message(s)"
+          scripts/check_attribution.sh "$dir"/*
+
   container:
     # Builds the real image (same platform as Cloud Run) and smoke-tests it. This is the only
     # place the image is built for now (no local Docker).
