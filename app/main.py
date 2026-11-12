@@ -4,6 +4,7 @@ Run locally:  uv run python -m app          (reads PORT; see app/__main__.py)
          or:  uv run uvicorn app.main:create_app --factory --no-access-log
 """
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from app.api import chat
 from app.api.errors import install_error_handlers
 from app.api.limits import BodySizeLimitMiddleware
 from app.config import Settings
+from app.db.pool import create_pool
 from app.providers.base import Provider
 from app.providers.mock import MockConfig, MockProvider
 from app.providers.router import ModelRouter
@@ -61,6 +63,8 @@ def build_providers(settings: Settings) -> dict[str, Provider]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state = get_state(app)
     state.http_client = _build_http_client(state.settings)
+    if state.settings.database_url is not None:
+        state.db_pool = await create_pool(state.settings)
     state.providers = dict(state.provider_overrides or build_providers(state.settings))
     # Raises (and so stops startup) if a route points at a provider that doesn't exist.
     state.model_router = ModelRouter(state.settings.model_routes, state.providers)
@@ -76,6 +80,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("shutdown_started")
         await state.http_client.aclose()
         state.http_client = None
+        if state.db_pool is not None:
+            # Bounded: don't let a stuck connection eat Cloud Run's 10 s shutdown window.
+            try:
+                await asyncio.wait_for(state.db_pool.close(), timeout=3)
+            except TimeoutError:
+                state.db_pool.terminate()
+            state.db_pool = None
         log.info("shutdown_complete")
 
 

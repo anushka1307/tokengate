@@ -4,9 +4,9 @@ Every variable is prefixed with ``TOKENGATE_``. Invalid values fail at startup, 
 """
 
 import re
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     mock_mid_stream_error_rate: float = Field(default=0.0, ge=0, le=1)
     mock_seed: int | None = None
 
+    # Postgres (tenants and API keys). Optional until auth lands in step 2.2. A SecretStr so a
+    # password in the URL never appears in logs or reprs. e.g. postgresql://user:pw@host/db
+    database_url: SecretStr | None = None
+    # Small pool: Cloud Run runs a few instances, and free Postgres tiers cap connections.
+    # 0 at startup means a database outage doesn't stop the app from booting; /readyz reports
+    # it instead (D31).
+    db_pool_min_size: int = Field(default=0, ge=0, le=50)
+    db_pool_max_size: int = Field(default=5, ge=1, le=50)
+    db_connect_timeout_s: float = Field(default=3.0, gt=0, le=30)
+    # Client-side limit per query, plus the same limit enforced by Postgres itself.
+    db_query_timeout_s: float = Field(default=2.0, gt=0, le=30)
+
     # /metrics needs "Authorization: Bearer <token>" when set. With no token, /metrics is open
     # in local/test and disabled (404) in prod (D21). SecretStr keeps it out of logs and reprs.
     metrics_token: SecretStr | None = Field(default=None, min_length=16)
@@ -66,6 +78,22 @@ class Settings(BaseSettings):
             if not _TARGET.fullmatch(target):
                 raise ValueError(f"route for {alias!r} must look like 'provider/model'")
         return routes
+
+    @field_validator("database_url")
+    @classmethod
+    def _check_database_url(cls, url: SecretStr | None) -> SecretStr | None:
+        if url is not None and not url.get_secret_value().startswith(
+            ("postgresql://", "postgres://")
+        ):
+            # Don't echo the value: it may contain a password.
+            raise ValueError("database_url must start with postgresql:// or postgres://")
+        return url
+
+    @model_validator(mode="after")
+    def _check_pool_sizes(self) -> Self:
+        if self.db_pool_min_size > self.db_pool_max_size:
+            raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
+        return self
 
     @field_validator("log_level", mode="before")
     @classmethod
