@@ -51,3 +51,23 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** custom SIGTERM handler; uvicorn's built-in behaviour.
 - **Choice:** uvicorn's. On SIGTERM it stops accepting connections and waits for in-flight requests (bounded by `--timeout-graceful-shutdown`), then runs our lifespan shutdown, which marks the app not-ready and closes the shared HTTP client.
 - **Why:** less code to get wrong. Cloud Run sends SIGTERM and allows 10 s before SIGKILL, so the timeout will be set below that in the Dockerfile (step 1.5).
+
+## D11. Request strictness: reject meaning-changing features, ignore unknown fields
+- **Options:** reject any unknown field; accept everything and forward it; reject only what we can't honour.
+- **Choice:** recognised-but-unsupported features (`tools`, `response_format`, `logprobs`, `n>1`, image/audio content, ...) get a 400 `unsupported_parameter`; truly unknown fields are ignored and never forwarded.
+- **Why:** silently dropping `response_format: json_object` would return prose to a client expecting JSON, which is worse than an error. Rejecting unknown fields would break clients whenever the SDK adds a field. Not forwarding them keeps untrusted input away from providers. Tool calling is planned for Phase 3, before PipelineMedic needs it.
+
+## D12. Input size limits in characters, model access by alias allowlist
+- **Options:** count tokens with each model's tokenizer; cap characters; no cap.
+- **Choice:** cap total characters (`TOKENGATE_MAX_INPUT_CHARS`), message count and `max_completion_tokens`; only model aliases in `TOKENGATE_ALLOWED_MODELS` are accepted.
+- **Why:** tokenizers are model-specific and cost CPU on the hot path; a character cap is a cheap first guard against cost and memory abuse. Accurate token counts come from the provider's usage data (Phase 4). Aliases (`mock-1`, later e.g. `fast`) let us change the real model behind a name, including failover, without client changes.
+
+## D13. Validation errors: 400 in OpenAI's envelope, never echoing input
+- **Options:** FastAPI's default 422 with pydantic's error list; OpenAI-style 400.
+- **Choice:** 400 with `{"error": {"message", "type", "param", "code"}}`, reporting the first error and the count of others. 404/405/413/500 use the same envelope.
+- **Why:** OpenAI SDKs turn this envelope into typed exceptions, so clients behave correctly. FastAPI's default includes the rejected `input` value, which could copy a user's prompt into responses and logs; ours names the field only. A test proves that by planting a canary string. 500s never include exception text.
+
+## D14. Body-size limit as ASGI middleware that counts bytes as they arrive
+- **Options:** trust `Content-Length`; limit at a reverse proxy only; count bytes in middleware.
+- **Choice:** middleware that rejects early on a large `Content-Length`, but also counts bytes while reading (chunked uploads have no header, and the header can lie), then replays the buffered body to the app.
+- **Why:** rejects a 50 MB body after reading ~1 MB instead of after parsing all of it. Buffering costs nothing extra because the app buffers the body to parse JSON anyway. Cloud Run caps request size too, but defence in depth keeps the limit testable and the same everywhere.

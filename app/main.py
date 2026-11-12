@@ -11,6 +11,8 @@ import structlog
 from fastapi import FastAPI
 
 from app import __version__, health
+from app.api.errors import install_error_handlers
+from app.api.limits import BodySizeLimitMiddleware
 from app.config import Settings
 from app.state import AppState, get_state
 from app.telemetry.logging import configure_logging
@@ -69,5 +71,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.tg = AppState(settings=settings)
     app.include_router(health.router)
+    install_error_handlers(app)
+    # Starlette runs the LAST-added middleware outermost. Request context must wrap the size
+    # limit so that 413 responses still get a request ID and an access-log line.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_body_bytes)
     app.add_middleware(RequestContextMiddleware)
     return app
