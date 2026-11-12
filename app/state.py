@@ -3,6 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+import asyncpg
 import httpx
 from starlette.applications import Starlette
 
@@ -18,6 +19,7 @@ class AppState:
     # Tests can inject providers; otherwise they are built from settings at startup.
     provider_overrides: Mapping[str, Provider] | None = None
     http_client: httpx.AsyncClient | None = None
+    db_pool: asyncpg.Pool | None = None  # None when no database is configured
     providers: dict[str, Provider] = field(default_factory=dict)
     model_router: ModelRouter | None = None
     metrics: Metrics = field(default_factory=Metrics)

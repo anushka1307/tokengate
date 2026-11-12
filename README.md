@@ -17,6 +17,15 @@ uv run pre-commit install    # ruff, mypy, gitleaks + commit-message checks on e
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest
 ```
 
+### Database (Postgres 17)
+```bash
+brew install postgresql@17 && brew services start postgresql@17
+createdb tokengate_dev && createdb tokengate_test
+TOKENGATE_DATABASE_URL=postgresql://localhost/tokengate_dev uv run python -m app.db.migrate
+TOKENGATE_TEST_DATABASE_URL=postgresql://localhost/tokengate_test uv run pytest   # runs DB tests too
+```
+Without `TOKENGATE_TEST_DATABASE_URL` the database tests are skipped locally; CI always runs them.
+
 ## Run locally
 ```bash
 uv run python -m app            # listens on $PORT (default 8000)

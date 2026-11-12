@@ -5,6 +5,7 @@ description = "Multi-tenant LLM gateway: auth, rate limits, budgets, caching, fa
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "asyncpg>=0.32.0",
     "fastapi>=0.162.4",
     "httpx>=0.28.1",
     "prometheus-client>=0.26.0",
@@ -59,6 +60,7 @@ addopts = "-ra --strict-markers --strict-config"
 [dependency-groups]
 dev = [
     "asgi-lifespan>=2.1.0",
+    "asyncpg-stubs>=0.32.0",
     "httpx2>=2.16.0",
     "mypy>=2.4.1",
     "openai>=3.49.0",
