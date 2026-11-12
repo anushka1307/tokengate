@@ -3,12 +3,16 @@
 Every variable is prefixed with ``TOKENGATE_``. Invalid values fail at startup, never mid-request.
 """
 
+import re
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+
+_ALIAS = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_TARGET = re.compile(r"[a-z0-9_-]{1,32}/[A-Za-z0-9._:-]{1,128}")
 
 
 class Settings(BaseSettings):
@@ -25,13 +29,35 @@ class Settings(BaseSettings):
     http_max_connections: int = Field(default=100, gt=0, le=10_000)
     http_max_keepalive_connections: int = Field(default=20, gt=0, le=10_000)
 
-    # Request limits (docs/DECISIONS.md D11-D14). Clients send model *aliases*; only these are
-    # accepted. Env format is JSON, e.g. TOKENGATE_ALLOWED_MODELS='["mock-1","fast"]'.
-    allowed_models: tuple[str, ...] = Field(default=("mock-1",), min_length=1)
+    # Model aliases clients may request, each mapped to "<provider>/<provider's model>" (D16).
+    # Only these aliases are accepted. Env format is JSON, e.g.
+    # TOKENGATE_MODEL_ROUTES='{"mock-1": "mock/echo-v1", "fast": "gemini/gemini-2.0-flash"}'
+    model_routes: dict[str, str] = Field(
+        default_factory=lambda: {"mock-1": "mock/echo-v1"}, min_length=1
+    )
+
+    # MockProvider behaviour (local dev, tests, load and chaos tests).
+    mock_first_token_delay_ms: float = Field(default=0.0, ge=0, le=60_000)
+    mock_per_token_delay_ms: float = Field(default=0.0, ge=0, le=10_000)
+    mock_error_rate: float = Field(default=0.0, ge=0, le=1)
+    mock_mid_stream_error_rate: float = Field(default=0.0, ge=0, le=1)
+    mock_seed: int | None = None
+
+    # Request limits (D11-D14).
     max_body_bytes: int = Field(default=1_048_576, gt=0, le=10 * 1_048_576)
     max_messages: int = Field(default=256, gt=0, le=10_000)
     max_input_chars: int = Field(default=200_000, gt=0, le=5_000_000)
     max_completion_tokens: int = Field(default=4_096, gt=0, le=200_000)
+
+    @field_validator("model_routes")
+    @classmethod
+    def _check_routes(cls, routes: dict[str, str]) -> dict[str, str]:
+        for alias, target in routes.items():
+            if not _ALIAS.fullmatch(alias):
+                raise ValueError(f"invalid model alias {alias!r}")
+            if not _TARGET.fullmatch(target):
+                raise ValueError(f"route for {alias!r} must look like 'provider/model'")
+        return routes
 
     @field_validator("log_level", mode="before")
     @classmethod

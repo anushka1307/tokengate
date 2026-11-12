@@ -3,7 +3,7 @@
 Run locally:  uv run uvicorn app.main:create_app --factory --no-access-log
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
 import httpx
@@ -11,9 +11,13 @@ import structlog
 from fastapi import FastAPI
 
 from app import __version__, health
+from app.api import chat
 from app.api.errors import install_error_handlers
 from app.api.limits import BodySizeLimitMiddleware
 from app.config import Settings
+from app.providers.base import Provider
+from app.providers.mock import MockConfig, MockProvider
+from app.providers.router import ModelRouter
 from app.state import AppState, get_state
 from app.telemetry.logging import configure_logging
 from app.telemetry.middleware import RequestContextMiddleware
@@ -37,10 +41,27 @@ def _build_http_client(settings: Settings) -> httpx.AsyncClient:
     )
 
 
+def build_providers(settings: Settings) -> dict[str, Provider]:
+    """Every provider this process can route to. Real adapters (Gemini, Groq) join in Phase 3."""
+    mock = MockProvider(
+        MockConfig(
+            first_token_delay_s=settings.mock_first_token_delay_ms / 1000,
+            per_token_delay_s=settings.mock_per_token_delay_ms / 1000,
+            error_rate=settings.mock_error_rate,
+            mid_stream_error_rate=settings.mock_mid_stream_error_rate,
+            seed=settings.mock_seed,
+        )
+    )
+    return {mock.name: mock}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state = get_state(app)
     state.http_client = _build_http_client(state.settings)
+    state.providers = dict(state.provider_overrides or build_providers(state.settings))
+    # Raises (and so stops startup) if a route points at a provider that doesn't exist.
+    state.model_router = ModelRouter(state.settings.model_routes, state.providers)
     state.ready = True
     log.info("startup_complete", env=state.settings.env, version=__version__)
     try:
@@ -49,13 +70,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # uvicorn calls this after it has stopped accepting connections and in-flight requests
         # have finished (bounded by --timeout-graceful-shutdown). Release resources last.
         state.ready = False
+        state.model_router = None
         log.info("shutdown_started")
         await state.http_client.aclose()
         state.http_client = None
         log.info("shutdown_complete")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None, providers: Mapping[str, Provider] | None = None
+) -> FastAPI:
     settings = settings if settings is not None else Settings()
     configure_logging(settings.log_level)
 
@@ -69,8 +93,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url=None if is_prod else "/openapi.json",
     )
-    app.state.tg = AppState(settings=settings)
+    app.state.tg = AppState(settings=settings, provider_overrides=providers)
     app.include_router(health.router)
+    app.include_router(chat.router)
     install_error_handlers(app)
     # Starlette runs the LAST-added middleware outermost. Request context must wrap the size
     # limit so that 413 responses still get a request ID and an access-log line.
