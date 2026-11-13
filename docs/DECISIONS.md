@@ -151,3 +151,8 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** specific error per reason; one generic 401.
 - **Choice:** every failure (missing, malformed, unknown, wrong secret, revoked, tenant disabled) returns the same OpenAI-style `invalid_api_key` body with `WWW-Authenticate: Bearer`. The reason goes only to logs and `tokengate_auth_failures_total{reason}`. The secret is verified *before* revocation/disabled status, so status is only revealed to someone holding the real key. If the key lookup itself fails (database down), the answer is 503 `auth_unavailable`: nobody gets in, but clients aren't told their key is bad.
 - **Why:** distinct messages let an attacker enumerate prefixes or learn which keys were revoked; operators still get full detail from logs and metrics. `TOKENGATE_AUTH=disabled` exists for local development and tests only and is refused when `TOKENGATE_ENV=prod`, as is prod without a database or pepper.
+
+## D36. Migrations read their own minimal settings
+- **Options:** give the migration job every secret the gateway needs; turn auth off for migrations; a separate `MigrationSettings` with only the database URL, connect timeout and log level.
+- **Choice:** `MigrationSettings`. `python -m app.db.migrate` no longer loads the full `Settings`.
+- **Why:** least privilege. A migration job (in CI, or later a Cloud Run job) never handles API keys, so it shouldn't need the pepper or metrics token, and switching auth off would be refused in prod anyway. Found when the auth-required default broke the CI migration step.

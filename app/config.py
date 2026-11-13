@@ -15,6 +15,13 @@ _ALIAS = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _TARGET = re.compile(r"[a-z0-9_-]{1,32}/[A-Za-z0-9._:-]{1,128}")
 
 
+def _validate_database_url(url: SecretStr | None) -> SecretStr | None:
+    if url is not None and not url.get_secret_value().startswith(("postgresql://", "postgres://")):
+        # Don't echo the value: it may contain a password.
+        raise ValueError("database_url must start with postgresql:// or postgres://")
+    return url
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TOKENGATE_", frozen=True, extra="ignore")
 
@@ -92,12 +99,7 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def _check_database_url(cls, url: SecretStr | None) -> SecretStr | None:
-        if url is not None and not url.get_secret_value().startswith(
-            ("postgresql://", "postgres://")
-        ):
-            # Don't echo the value: it may contain a password.
-            raise ValueError("database_url must start with postgresql:// or postgres://")
-        return url
+        return _validate_database_url(url)
 
     @model_validator(mode="after")
     def _check_pool_sizes(self) -> Self:
@@ -124,6 +126,30 @@ class Settings(BaseSettings):
                     "(set TOKENGATE_AUTH=disabled for local development without a database)"
                 )
         return self
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_log_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+
+class MigrationSettings(BaseSettings):
+    """Only what ``python -m app.db.migrate`` needs (least privilege, D36).
+
+    A migration job never handles API keys, so it must not require the pepper or metrics token
+    that the full :class:`Settings` demands when auth is on.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="TOKENGATE_", frozen=True, extra="ignore")
+
+    log_level: LogLevel = "INFO"
+    database_url: SecretStr | None = None
+    db_connect_timeout_s: float = Field(default=3.0, gt=0, le=30)
+
+    @field_validator("database_url")
+    @classmethod
+    def _check_database_url(cls, url: SecretStr | None) -> SecretStr | None:
+        return _validate_database_url(url)
 
     @field_validator("log_level", mode="before")
     @classmethod
