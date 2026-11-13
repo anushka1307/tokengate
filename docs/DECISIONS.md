@@ -131,3 +131,28 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** fail startup when Postgres is down; fail liveness; fail readiness only.
 - **Choice:** the pool opens no connections at startup, so the app always boots; `/readyz` runs `SELECT 1` with a 1 s limit and returns 503 when it fails; `/healthz` never touches the database (D9). The 503 body doesn't say which dependency failed; the log does.
 - **Why:** if a database blip killed liveness or startup, Cloud Run would restart every instance at once and turn a short outage into a longer one. Not-ready instances just stop receiving traffic and recover by themselves when Postgres returns.
+
+## D32. Key fingerprints: HMAC-SHA256 with a server-side pepper, not bcrypt/argon2
+- **Options:** store keys as-is; plain SHA-256; bcrypt/argon2; HMAC-SHA256 with a pepper.
+- **Choice:** store `HMAC-SHA256(pepper, secret)` (32 bytes). The pepper is `TOKENGATE_API_KEY_PEPPER` (≥32 chars, a `SecretStr`), held outside the database. Comparison is constant-time.
+- **Why:** bcrypt/argon2 are deliberately slow to protect *low-entropy human passwords*. Our secrets are ~256 random bits, so a fast hash is already unguessable, and a slow hash would add tens to hundreds of ms to every request. The pepper means a leaked database alone can't be used to test guesses. Trade-off: rotating the pepper invalidates every key, so rotation means reissuing keys (a versioned pepper can be added if that becomes routine).
+
+## D33. Auth cache: 60 s, bounded, caches misses too
+- **Options:** query Postgres on every request; cache hits only; cache hits and misses.
+- **Choice:** in-process cache keyed by prefix, TTL `TOKENGATE_AUTH_CACHE_TTL_S` (60 s), at most `TOKENGATE_AUTH_CACHE_MAX_ENTRIES` (LRU eviction). Misses ("no such prefix") are cached as well.
+- **Why:** keeps the database off the hot path. Caching misses stops a flood of made-up keys from becoming a flood of queries; the size cap stops that flood from exhausting memory instead. The cost: **a revoked key or disabled tenant can keep working for up to 60 s per instance**. The admin CLI says so when revoking, and a fake-clock test pins the behaviour. Concurrent misses for the same prefix can each query once (no request coalescing); acceptable at this scale.
+
+## D34. Key format `tg_<prefix>_<secret>`, plus a secret-scanner rule
+- **Options:** opaque random string; UUID; prefixed key with a lookup part.
+- **Choice:** `tg_` + 12-char public prefix + 43-char secret (alphabet A-Z a-z 0-9). `.gitleaks.toml` adds a `tokengate-api-key` rule on top of gitleaks' defaults.
+- **Why:** the prefix gives an indexed lookup without scanning and is safe to show in logs and listings; the `tg_` marker makes a leaked key recognisable, so our own pre-commit hook and CI catch it before it reaches git history (verified against a freshly generated key).
+
+## D35. One identical 401 for every auth failure; fail closed when the database is down
+- **Options:** specific error per reason; one generic 401.
+- **Choice:** every failure (missing, malformed, unknown, wrong secret, revoked, tenant disabled) returns the same OpenAI-style `invalid_api_key` body with `WWW-Authenticate: Bearer`. The reason goes only to logs and `tokengate_auth_failures_total{reason}`. The secret is verified *before* revocation/disabled status, so status is only revealed to someone holding the real key. If the key lookup itself fails (database down), the answer is 503 `auth_unavailable`: nobody gets in, but clients aren't told their key is bad.
+- **Why:** distinct messages let an attacker enumerate prefixes or learn which keys were revoked; operators still get full detail from logs and metrics. `TOKENGATE_AUTH=disabled` exists for local development and tests only and is refused when `TOKENGATE_ENV=prod`, as is prod without a database or pepper.
+
+## D36. Migrations read their own minimal settings
+- **Options:** give the migration job every secret the gateway needs; turn auth off for migrations; a separate `MigrationSettings` with only the database URL, connect timeout and log level.
+- **Choice:** `MigrationSettings`. `python -m app.db.migrate` no longer loads the full `Settings`.
+- **Why:** least privilege. A migration job (in CI, or later a Cloud Run job) never handles API keys, so it shouldn't need the pepper or metrics token, and switching auth off would be refused in prod anyway. Found when the auth-required default broke the CI migration step.

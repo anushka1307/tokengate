@@ -7,7 +7,6 @@ TOKENGATE_REQUIRE_DB_TESTS=1 so they fail instead of silently skipping.
 """
 
 import asyncio
-import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -20,34 +19,14 @@ import pytest
 from asgi_lifespan import LifespanManager
 from pydantic import SecretStr
 
-from app.config import Settings
+from app.config import MigrationSettings, Settings
+from app.db import migrate as migrate_cli
 from app.db.migrate import Migration, MigrationError, load_migrations, migrate
 from app.db.pool import create_pool
 from app.main import create_app
 from app.state import get_state
 
-TEST_DB_URL = os.environ.get("TOKENGATE_TEST_DATABASE_URL")
-REQUIRE_DB = os.environ.get("TOKENGATE_REQUIRE_DB_TESTS") == "1"
 UNREACHABLE = "postgresql://127.0.0.1:1/nothing"  # port 1: nothing listens there
-
-
-@pytest.fixture
-async def pg() -> AsyncIterator[str]:
-    """A DSN whose search_path is a fresh, empty schema (dropped afterwards)."""
-    if not TEST_DB_URL:
-        message = "set TOKENGATE_TEST_DATABASE_URL to run database tests"
-        if REQUIRE_DB:
-            pytest.fail(message)
-        pytest.skip(message)
-    schema = f"test_{uuid.uuid4().hex[:12]}"  # generated, never user input
-    admin = await asyncpg.connect(TEST_DB_URL)
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        sep = "&" if "?" in TEST_DB_URL else "?"
-        yield f"{TEST_DB_URL}{sep}search_path={schema}"
-    finally:
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
 
 
 @pytest.fixture
@@ -292,3 +271,20 @@ def test_database_password_never_printed() -> None:
 def test_pool_min_cannot_exceed_max() -> None:
     with pytest.raises(pydantic.ValidationError, match="must not exceed"):
         Settings(env="test", db_pool_min_size=6, db_pool_max_size=5)
+
+
+async def test_migrate_command_needs_only_the_database_url(
+    pg: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: with auth required (the default), the full Settings demands a pepper. The
+    # migration command must not, because a migration job never handles API keys.
+    monkeypatch.delenv("TOKENGATE_AUTH", raising=False)
+    monkeypatch.delenv("TOKENGATE_API_KEY_PEPPER", raising=False)
+    monkeypatch.setenv("TOKENGATE_DATABASE_URL", pg)
+    assert await migrate_cli._main() == 0
+    assert await migrate_cli._main() == 0  # second run applies nothing and still succeeds
+
+
+def test_migration_settings_reject_a_non_postgres_url() -> None:
+    with pytest.raises(pydantic.ValidationError, match="must start with postgresql://"):
+        MigrationSettings(database_url=SecretStr("mysql://user:secret@host/db"))

@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 import structlog
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.api.errors import APIError, error_body
@@ -27,6 +27,7 @@ from app.api.schemas import (
     Usage,
 )
 from app.api.sse import DONE, EventStreamResponse, sse_event
+from app.auth.dependency import Principal, authenticate
 from app.providers.base import (
     Provider,
     ProviderError,
@@ -74,7 +75,11 @@ _PROVIDER_ERRORS: dict[str, tuple[int, str, str]] = {
 
 
 @router.post("/v1/chat/completions", response_model=None)
-async def create_chat_completion(body: ChatCompletionRequest, request: Request) -> Response:
+async def create_chat_completion(
+    body: ChatCompletionRequest,
+    request: Request,
+    principal: Principal | None = Depends(authenticate),  # noqa: B008 - FastAPI dependency
+) -> Response:
     state = get_state(request.app)
     if state.model_router is None:
         raise APIError(503, "The gateway is not ready.", code="not_ready", error_type="api_error")

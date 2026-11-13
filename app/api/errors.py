@@ -38,6 +38,7 @@ class APIError(Exception):
         code: str | None = None,
         param: str | None = None,
         error_type: str | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -45,6 +46,7 @@ class APIError(Exception):
         self.code = code
         self.param = param
         self.error_type = error_type or _STATUS_TYPES.get(status_code, "api_error")
+        self.headers = headers or {}
 
 
 def error_body(
@@ -59,6 +61,7 @@ def error_response(error: APIError) -> JSONResponse:
         content=error_body(
             error.message, error_type=error.error_type, code=error.code, param=error.param
         ),
+        headers=error.headers or None,
     )
 
 

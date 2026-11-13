@@ -21,7 +21,7 @@ from pathlib import Path
 import asyncpg
 import structlog
 
-from app.config import Settings
+from app.config import MigrationSettings
 from app.telemetry.logging import configure_logging
 
 log = structlog.get_logger("tokengate.migrate")
@@ -109,7 +109,7 @@ async def migrate(conn: asyncpg.Connection, migrations: list[Migration]) -> list
 
 
 async def _main() -> int:
-    settings = Settings()
+    settings = MigrationSettings()
     configure_logging(settings.log_level)
     if settings.database_url is None:
         log.error("migrate_failed", reason="TOKENGATE_DATABASE_URL is not set")

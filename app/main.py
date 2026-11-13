@@ -16,6 +16,7 @@ from app import __version__, health
 from app.api import chat
 from app.api.errors import install_error_handlers
 from app.api.limits import BodySizeLimitMiddleware
+from app.auth.store import KeyStore
 from app.config import Settings
 from app.db.pool import create_pool
 from app.providers.base import Provider
@@ -65,6 +66,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     state.http_client = _build_http_client(state.settings)
     if state.settings.database_url is not None:
         state.db_pool = await create_pool(state.settings)
+        state.key_store = KeyStore(
+            state.db_pool,
+            ttl_s=state.settings.auth_cache_ttl_s,
+            max_entries=state.settings.auth_cache_max_entries,
+        )
     state.providers = dict(state.provider_overrides or build_providers(state.settings))
     # Raises (and so stops startup) if a route points at a provider that doesn't exist.
     state.model_router = ModelRouter(state.settings.model_routes, state.providers)
@@ -80,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("shutdown_started")
         await state.http_client.aclose()
         state.http_client = None
+        state.key_store = None
         if state.db_pool is not None:
             # Bounded: don't let a stuck connection eat Cloud Run's 10 s shutdown window.
             try:

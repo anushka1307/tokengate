@@ -1,0 +1,12 @@
+# gitleaks config: the default rules plus one for TokenGate's own API keys (D34).
+# Found automatically as <scanned path>/.gitleaks.toml by the pre-commit hook and the CI job.
+title = "tokengate"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "tokengate-api-key"
+description = "TokenGate API key (tg_<12-char prefix>_<43-char secret>)"
+regex = '''\btg_[A-Za-z0-9]{12}_[A-Za-z0-9]{43}\b'''
+keywords = ["tg_"]

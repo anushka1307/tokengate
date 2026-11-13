@@ -82,6 +82,13 @@ class Metrics:
             ["provider", "model", "kind"],
             registry=r,
         )
+        self.auth_failures = Counter(
+            "tokengate_auth_failures_total",
+            "Rejected API keys by reason (missing, malformed, unknown, wrong_secret, revoked, "
+            "tenant_disabled). Clients always see the same 401.",
+            ["reason"],
+            registry=r,
+        )
         build_info = Gauge(
             "tokengate_build_info", "Always 1; labels identify the build.", ["version"], registry=r
         )

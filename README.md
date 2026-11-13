@@ -26,6 +26,16 @@ TOKENGATE_TEST_DATABASE_URL=postgresql://localhost/tokengate_test uv run pytest 
 ```
 Without `TOKENGATE_TEST_DATABASE_URL` the database tests are skipped locally; CI always runs them.
 
+### API keys
+`/v1/chat/completions` requires `Authorization: Bearer tg_...` unless `TOKENGATE_AUTH=disabled`
+(local development only). With `TOKENGATE_DATABASE_URL` and `TOKENGATE_API_KEY_PEPPER` set:
+```bash
+uv run python -m app.admin create-tenant --name pipelinemedic --rpm 60 --daily-tokens 200000
+uv run python -m app.admin create-key --tenant pipelinemedic --name laptop   # shown once
+uv run python -m app.admin list-keys --tenant pipelinemedic
+uv run python -m app.admin revoke-key --prefix <prefix>
+```
+
 ## Run locally
 ```bash
 uv run python -m app            # listens on $PORT (default 8000)
