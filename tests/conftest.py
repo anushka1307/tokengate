@@ -10,6 +10,7 @@ os.environ["TOKENGATE_AUTH"] = "disabled"
 import asyncpg
 import httpx
 import pytest
+import redis.asyncio as redis
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 
@@ -47,6 +48,8 @@ def log_output(app: FastAPI) -> io.StringIO:
 
 
 TEST_DB_URL = os.environ.get("TOKENGATE_TEST_DATABASE_URL")
+TEST_REDIS_URL = os.environ.get("TOKENGATE_TEST_REDIS_URL")
+# Set in CI: tests that need Postgres or Redis fail instead of silently skipping.
 REQUIRE_DB = os.environ.get("TOKENGATE_REQUIRE_DB_TESTS") == "1"
 
 
@@ -67,3 +70,28 @@ async def pg() -> AsyncIterator[str]:
     finally:
         await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await admin.close()
+
+
+@pytest.fixture
+async def redis_url() -> AsyncIterator[str]:
+    """The test Redis URL. Each test uses its own key prefix (``redis_prefix``)."""
+    if not TEST_REDIS_URL:
+        message = "set TOKENGATE_TEST_REDIS_URL to run Redis tests"
+        if REQUIRE_DB:
+            pytest.fail(message)
+        pytest.skip(message)
+    yield TEST_REDIS_URL
+
+
+@pytest.fixture
+async def redis_prefix(redis_url: str) -> AsyncIterator[str]:
+    """A fresh key prefix; every key under it is deleted afterwards."""
+    prefix = f"test:{uuid.uuid4().hex[:12]}:"
+    yield prefix
+    client = redis.Redis.from_url(redis_url, socket_timeout=2, socket_connect_timeout=2)
+    try:
+        keys = [key async for key in client.scan_iter(match=f"{prefix}*")]
+        if keys:
+            await client.delete(*keys)
+    finally:
+        await client.aclose()

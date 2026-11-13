@@ -72,6 +72,18 @@ class Settings(BaseSettings):
     auth_cache_ttl_s: float = Field(default=60.0, ge=0, le=600)
     auth_cache_max_entries: int = Field(default=10_000, ge=1, le=1_000_000)
 
+    # Redis for rate limiting (D37-D40). Optional locally; required in prod. A SecretStr because
+    # the URL may carry a password. rediss:// means TLS (Upstash).
+    redis_url: SecretStr | None = None
+    # Short on purpose: rate limiting fails open, so a slow Redis must not slow every request.
+    redis_connect_timeout_s: float = Field(default=0.5, gt=0, le=10)
+    redis_timeout_s: float = Field(default=0.25, gt=0, le=10)
+    # Every key TokenGate writes starts with this, so a shared Redis stays tidy.
+    redis_key_prefix: str = Field(default="tg:", pattern=r"^[a-z0-9:_-]{1,32}$")
+    # After a Redis failure, skip Redis (allow requests) for this long instead of paying the
+    # timeout on every request during an outage.
+    ratelimit_cooldown_s: float = Field(default=5.0, ge=0, le=300)
+
     # /metrics needs "Authorization: Bearer <token>" when set. With no token, /metrics is open
     # in local/test and disabled (404) in prod (D21). SecretStr keeps it out of logs and reprs.
     metrics_token: SecretStr | None = Field(default=None, min_length=16)
@@ -101,6 +113,14 @@ class Settings(BaseSettings):
     def _check_database_url(cls, url: SecretStr | None) -> SecretStr | None:
         return _validate_database_url(url)
 
+    @field_validator("redis_url")
+    @classmethod
+    def _check_redis_url(cls, url: SecretStr | None) -> SecretStr | None:
+        if url is not None and not url.get_secret_value().startswith(("redis://", "rediss://")):
+            # Don't echo the value: it may contain a password.
+            raise ValueError("redis_url must start with redis:// or rediss://")
+        return url
+
     @model_validator(mode="after")
     def _check_pool_sizes(self) -> Self:
         if self.db_pool_min_size > self.db_pool_max_size:
@@ -125,6 +145,13 @@ class Settings(BaseSettings):
                     f"auth is required but {', '.join(missing)} is not set "
                     "(set TOKENGATE_AUTH=disabled for local development without a database)"
                 )
+        return self
+
+    # Runs after _check_auth, so auth problems are reported first.
+    @model_validator(mode="after")
+    def _check_prod_rate_limiting(self) -> Self:
+        if self.env == "prod" and self.redis_url is None:
+            raise ValueError("TOKENGATE_REDIS_URL is required in prod (rate limiting)")
         return self
 
     @field_validator("log_level", mode="before")

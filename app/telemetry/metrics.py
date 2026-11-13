@@ -89,6 +89,13 @@ class Metrics:
             ["reason"],
             registry=r,
         )
+        self.ratelimit_decisions = Counter(
+            "tokengate_ratelimit_decisions_total",
+            "Rate-limit checks by result (allowed, limited_key, limited_tenant, redis_error, "
+            "skipped_cooldown). Redis problems fail open: the request is allowed.",
+            ["result"],
+            registry=r,
+        )
         build_info = Gauge(
             "tokengate_build_info", "Always 1; labels identify the build.", ["version"], registry=r
         )

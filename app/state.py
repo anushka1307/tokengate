@@ -5,12 +5,14 @@ from dataclasses import dataclass, field
 
 import asyncpg
 import httpx
+from redis.asyncio import Redis
 from starlette.applications import Starlette
 
 from app.auth.store import KeyStore
 from app.config import Settings
 from app.providers.base import Provider
 from app.providers.router import ModelRouter
+from app.ratelimit.limiter import RateLimiter
 from app.telemetry.metrics import Metrics
 
 
@@ -22,6 +24,8 @@ class AppState:
     http_client: httpx.AsyncClient | None = None
     db_pool: asyncpg.Pool | None = None  # None when no database is configured
     key_store: KeyStore | None = None  # set when a database is configured
+    redis: Redis | None = None  # None when no Redis is configured
+    rate_limiter: RateLimiter | None = None  # None means no rate limiting (local dev only)
     providers: dict[str, Provider] = field(default_factory=dict)
     model_router: ModelRouter | None = None
     metrics: Metrics = field(default_factory=Metrics)

@@ -245,6 +245,7 @@ async def test_metrics_hidden_in_prod_without_a_token() -> None:
         auth="required",
         database_url=SecretStr("postgresql://127.0.0.1:1/unused"),  # never contacted here
         api_key_pepper=SecretStr("p" * 32),
+        redis_url=SecretStr("redis://127.0.0.1:1/0"),  # never contacted here
     )
     async for c in running(create_app(prod)):
         resp = await c.get("/metrics")

@@ -43,6 +43,22 @@ spec:
                 secretKeyRef:
                   name: tokengate-metrics-token
                   key: METRICS_SECRET_VERSION  # pin a version number, not "latest"
+            # Prod refuses to start without these three (auth and rate limiting).
+            - name: TOKENGATE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tokengate-database-url
+                  key: DATABASE_SECRET_VERSION
+            - name: TOKENGATE_API_KEY_PEPPER
+              valueFrom:
+                secretKeyRef:
+                  name: tokengate-api-key-pepper
+                  key: PEPPER_SECRET_VERSION
+            - name: TOKENGATE_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: tokengate-redis-url
+                  key: REDIS_SECRET_VERSION
           resources:
             limits:
               cpu: "1"

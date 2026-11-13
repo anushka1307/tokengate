@@ -26,6 +26,16 @@ TOKENGATE_TEST_DATABASE_URL=postgresql://localhost/tokengate_test uv run pytest 
 ```
 Without `TOKENGATE_TEST_DATABASE_URL` the database tests are skipped locally; CI always runs them.
 
+### Redis (rate limits)
+```bash
+brew install redis && brew services start redis     # listens on localhost only
+TOKENGATE_TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest   # runs Redis tests too
+```
+With `TOKENGATE_REDIS_URL` set, each API key and each tenant gets a token bucket holding one
+minute of requests (`--rpm`), refilled continuously. Over the limit: `429` with `Retry-After`.
+Every successful response carries `X-RateLimit-Remaining`. If Redis is down, requests are
+allowed (fail open) and `tokengate_ratelimit_decisions_total{result="redis_error"}` counts it.
+
 ### API keys
 `/v1/chat/completions` requires `Authorization: Bearer tg_...` unless `TOKENGATE_AUTH=disabled`
 (local development only). With `TOKENGATE_DATABASE_URL` and `TOKENGATE_API_KEY_PEPPER` set:
@@ -51,7 +61,8 @@ curl -N localhost:8000/v1/chat/completions -H 'content-type: application/json' \
   -d '{"model": "mock-1", "stream": true, "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
-Any OpenAI SDK works too: point `base_url` at `http://localhost:8000/v1` (any API key until Phase 2).
+Any OpenAI SDK works too: point `base_url` at `http://localhost:8000/v1`, with a `tg_...` key as the API key
+(any string when `TOKENGATE_AUTH=disabled`).
 
 ## Container
 The image is built and smoke-tested by CI on every pull request (`container` job), for

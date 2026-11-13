@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     services:
-      # Real Postgres for the database tests. Reachable only inside this job, so no password.
+      # Real Postgres and Redis for the tests. Reachable only inside this job, so no passwords.
       postgres:
         image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
         env:
@@ -31,9 +31,19 @@ jobs:
           --health-interval 2s
           --health-timeout 2s
           --health-retries 15
+      redis:
+        image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
     env:
       TOKENGATE_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/tokengate_test
-      TOKENGATE_REQUIRE_DB_TESTS: "1"  # fail, don't skip, if the database tests can't run
+      TOKENGATE_TEST_REDIS_URL: redis://localhost:6379/15
+      TOKENGATE_REQUIRE_DB_TESTS: "1"  # fail, don't skip, if the Postgres/Redis tests can't run
     steps:
       # Third-party actions are pinned to commit SHAs (tags can be moved); the tag is in the comment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,10 +124,33 @@ jobs:
           scripts/check_attribution.sh "$dir"/*
 
   container:
-    # Builds the real image (same platform as Cloud Run) and smoke-tests it. This is the only
+    # Builds the real image (same platform as Cloud Run) and runs it in prod mode against real
+    # Postgres and Redis: migrations, the admin CLI, API keys, rate limits. This is the only
     # place the image is built for now (no local Docker).
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: tokengate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tokengate"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+      redis:
+        image: redis:8.10.3@sha256:1f88291b4c57bdf249f02eb085a8669889b2d2954e91d4de5118a5da6b78dd53
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
     env:
       METRICS_TOKEN: ci-only-metrics-token-not-a-secret
     steps:
@@ -141,13 +174,35 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           test "$user" = "10001:10001" || { echo "image must not run as root"; exit 1; }
 
-      - name: Start container (read-only filesystem)
+      - name: Prod config for this run (throwaway pepper, passed by file, masked in logs)
         run: |
-          # No database in this job yet, so run with auth off (local mode). Full auth in the
-          # container is tested once Redis and Postgres services join this job (step 2.3).
-          docker run -d --name tokengate --read-only -p 8080:8080 \
-            -e TOKENGATE_ENV=local -e TOKENGATE_AUTH=disabled \
-            -e TOKENGATE_METRICS_TOKEN="$METRICS_TOKEN" tokengate:ci
+          pepper=$(openssl rand -hex 32)
+          echo "::add-mask::$pepper"
+          env_file="$RUNNER_TEMP/tokengate.env"
+          {
+            echo "TOKENGATE_ENV=prod"
+            echo "TOKENGATE_DATABASE_URL=postgresql://postgres@localhost:5432/tokengate"
+            echo "TOKENGATE_REDIS_URL=redis://localhost:6379/0"
+            echo "TOKENGATE_API_KEY_PEPPER=$pepper"
+            echo "TOKENGATE_METRICS_TOKEN=$METRICS_TOKEN"
+          } > "$env_file"
+          echo "ENV_FILE=$env_file" >> "$GITHUB_ENV"
+
+      - name: Migrate and issue a key with the image's own tools
+        run: |
+          # --network host: the services are on the runner's localhost.
+          run() { docker run --rm --read-only --network host --env-file "$ENV_FILE" tokengate:ci "$@"; }
+          run python -m app.db.migrate
+          run python -m app.admin create-tenant --name smoke --rpm 5 --daily-tokens 100000
+          key=$(run python -m app.admin create-key --tenant smoke --name ci \
+            | grep -oE 'tg_[A-Za-z0-9]{12}_[A-Za-z0-9]{43}')
+          echo "::add-mask::$key"
+          echo "API_KEY=$key" >> "$GITHUB_ENV"
+
+      - name: Start container (prod mode, read-only filesystem)
+        run: |
+          docker run -d --name tokengate --read-only --network host \
+            --env-file "$ENV_FILE" tokengate:ci
 
       - name: Wait for readiness
         run: |
@@ -157,9 +212,10 @@ jobs:
           done
           echo "container never became ready"; exit 1
 
-      - name: Smoke test
+      - name: Smoke test (auth and rate limits on)
         env:
           BASE_URL: http://localhost:8080
+          CHECK_RATE_LIMIT: "1"  # tenant allows 5 rpm: keep sending until a 429 comes back
         run: scripts/smoke.sh
 
       - name: Graceful shutdown on SIGTERM
