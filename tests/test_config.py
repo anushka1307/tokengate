@@ -15,6 +15,10 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_env_vars_override_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TOKENGATE_ENV", "prod")
+    # prod requires auth, which requires a database and a pepper
+    monkeypatch.setenv("TOKENGATE_AUTH", "required")
+    monkeypatch.setenv("TOKENGATE_DATABASE_URL", "postgresql://db.example/tokengate")
+    monkeypatch.setenv("TOKENGATE_API_KEY_PEPPER", "p" * 32)
     monkeypatch.setenv("TOKENGATE_LOG_LEVEL", "debug")  # case-insensitive
     monkeypatch.setenv("TOKENGATE_HTTP_READ_TIMEOUT_S", "12.5")
     s = Settings()

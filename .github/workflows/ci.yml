@@ -143,7 +143,10 @@ jobs:
 
       - name: Start container (read-only filesystem)
         run: |
+          # No database in this job yet, so run with auth off (local mode). Full auth in the
+          # container is tested once Redis and Postgres services join this job (step 2.3).
           docker run -d --name tokengate --read-only -p 8080:8080 \
+            -e TOKENGATE_ENV=local -e TOKENGATE_AUTH=disabled \
             -e TOKENGATE_METRICS_TOKEN="$METRICS_TOKEN" tokengate:ci
 
       - name: Wait for readiness

@@ -7,6 +7,7 @@ import asyncpg
 import httpx
 from starlette.applications import Starlette
 
+from app.auth.store import KeyStore
 from app.config import Settings
 from app.providers.base import Provider
 from app.providers.router import ModelRouter
@@ -20,6 +21,7 @@ class AppState:
     provider_overrides: Mapping[str, Provider] | None = None
     http_client: httpx.AsyncClient | None = None
     db_pool: asyncpg.Pool | None = None  # None when no database is configured
+    key_store: KeyStore | None = None  # set when a database is configured
     providers: dict[str, Provider] = field(default_factory=dict)
     model_router: ModelRouter | None = None
     metrics: Metrics = field(default_factory=Metrics)

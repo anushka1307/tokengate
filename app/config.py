@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     # Client-side limit per query, plus the same limit enforced by Postgres itself.
     db_query_timeout_s: float = Field(default=2.0, gt=0, le=30)
 
+    # API-key authentication on /v1/chat/completions (D32-D35). "disabled" exists only for
+    # local development and tests and is refused in prod.
+    auth: Literal["required", "disabled"] = "required"
+    # Server-side secret mixed into every key fingerprint. Without it a stolen database
+    # can't be used to test key guesses. Changing it invalidates all existing keys.
+    api_key_pepper: SecretStr | None = Field(default=None, min_length=32)
+    # How long a key lookup is trusted. Also the longest a revoked key can keep working.
+    auth_cache_ttl_s: float = Field(default=60.0, ge=0, le=600)
+    auth_cache_max_entries: int = Field(default=10_000, ge=1, le=1_000_000)
+
     # /metrics needs "Authorization: Bearer <token>" when set. With no token, /metrics is open
     # in local/test and disabled (404) in prod (D21). SecretStr keeps it out of logs and reprs.
     metrics_token: SecretStr | None = Field(default=None, min_length=16)
@@ -93,6 +103,26 @@ class Settings(BaseSettings):
     def _check_pool_sizes(self) -> Self:
         if self.db_pool_min_size > self.db_pool_max_size:
             raise ValueError("db_pool_min_size must not exceed db_pool_max_size")
+        return self
+
+    @model_validator(mode="after")
+    def _check_auth(self) -> Self:
+        if self.env == "prod" and self.auth != "required":
+            raise ValueError("auth cannot be disabled in prod")
+        if self.auth == "required":
+            missing = [
+                name
+                for name, value in (
+                    ("TOKENGATE_DATABASE_URL", self.database_url),
+                    ("TOKENGATE_API_KEY_PEPPER", self.api_key_pepper),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"auth is required but {', '.join(missing)} is not set "
+                    "(set TOKENGATE_AUTH=disabled for local development without a database)"
+                )
         return self
 
     @field_validator("log_level", mode="before")

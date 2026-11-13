@@ -240,7 +240,13 @@ async def test_metrics_open_locally_without_a_token() -> None:
 
 
 async def test_metrics_hidden_in_prod_without_a_token() -> None:
-    async for c in running(create_app(Settings(env="prod"))):
+    prod = Settings(
+        env="prod",
+        auth="required",
+        database_url=SecretStr("postgresql://127.0.0.1:1/unused"),  # never contacted here
+        api_key_pepper=SecretStr("p" * 32),
+    )
+    async for c in running(create_app(prod)):
         resp = await c.get("/metrics")
     assert resp.status_code == 404
     assert resp.json()["error"]["type"] == "not_found_error"

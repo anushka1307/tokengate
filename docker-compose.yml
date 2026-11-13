@@ -10,6 +10,7 @@ services:
       - "8000:8080"
     environment:
       TOKENGATE_ENV: local  # the image defaults to prod; local keeps /metrics open for dev
+      TOKENGATE_AUTH: disabled  # no database in compose until Redis/Postgres join it
     env_file:
       - path: .env
         required: false  # optional local overrides; never committed

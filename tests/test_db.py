@@ -7,7 +7,6 @@ TOKENGATE_REQUIRE_DB_TESTS=1 so they fail instead of silently skipping.
 """
 
 import asyncio
-import os
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -26,28 +25,7 @@ from app.db.pool import create_pool
 from app.main import create_app
 from app.state import get_state
 
-TEST_DB_URL = os.environ.get("TOKENGATE_TEST_DATABASE_URL")
-REQUIRE_DB = os.environ.get("TOKENGATE_REQUIRE_DB_TESTS") == "1"
 UNREACHABLE = "postgresql://127.0.0.1:1/nothing"  # port 1: nothing listens there
-
-
-@pytest.fixture
-async def pg() -> AsyncIterator[str]:
-    """A DSN whose search_path is a fresh, empty schema (dropped afterwards)."""
-    if not TEST_DB_URL:
-        message = "set TOKENGATE_TEST_DATABASE_URL to run database tests"
-        if REQUIRE_DB:
-            pytest.fail(message)
-        pytest.skip(message)
-    schema = f"test_{uuid.uuid4().hex[:12]}"  # generated, never user input
-    admin = await asyncpg.connect(TEST_DB_URL)
-    try:
-        await admin.execute(f'CREATE SCHEMA "{schema}"')
-        sep = "&" if "?" in TEST_DB_URL else "?"
-        yield f"{TEST_DB_URL}{sep}search_path={schema}"
-    finally:
-        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-        await admin.close()
 
 
 @pytest.fixture
