@@ -156,3 +156,23 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** give the migration job every secret the gateway needs; turn auth off for migrations; a separate `MigrationSettings` with only the database URL, connect timeout and log level.
 - **Choice:** `MigrationSettings`. `python -m app.db.migrate` no longer loads the full `Settings`.
 - **Why:** least privilege. A migration job (in CI, or later a Cloud Run job) never handles API keys, so it shouldn't need the pepper or metrics token, and switching auth off would be refused in prod anyway. Found when the auth-required default broke the CI migration step.
+
+## D37. Token bucket, one minute of burst
+- **Options:** fixed window (simple, but allows 2x the limit across a window edge); sliding-window log (exact, but stores every request); token bucket (two numbers per bucket, smooth refill).
+- **Choice:** token bucket per API key and per tenant. Capacity = the per-minute limit, refilled at `rpm / 60` tokens a second. Over the limit: 429 `rate_limit_exceeded` with `Retry-After` (whole seconds, at least 1); successful responses carry `X-RateLimit-Remaining` (the smaller bucket).
+- **Why:** constant memory and no edge bursts. A one-minute burst lets batch clients send a minute's worth at once, which is what "60 requests per minute" means to most users; a smaller burst can be added per tenant later if needed.
+
+## D38. One Lua script charges both buckets, timed by Redis
+- **Options:** two separate Redis calls (a race between check and charge; a tenant-refused request could still drain the key bucket); MULTI/WATCH (retries under contention); one Lua script.
+- **Choice:** one script reads, refills and charges both buckets atomically: both or neither. Time comes from Redis `TIME`, not from the gateway. Keys share a `{tenant_id}` hash tag, and each bucket expires once it would be full again.
+- **Why:** one round trip, no race across instances (a test sends 50 concurrent requests at a bucket of 10 and exactly 10 pass), no clock skew between instances, and works on Redis Cluster. Costs one Redis command per request, which matters on Upstash's free plan (500K commands a month at the time of writing).
+
+## D39. Rate limiting fails open, quickly, and quietly
+- **Options:** fail closed (Redis outage = full outage); fail open with default client settings (redis-py defaults: 5 s timeouts); fail open with tight limits.
+- **Choice:** fail open with 0.5 s connect / 0.25 s command timeouts, no retries, an `asyncio.timeout` backstop, and a 5 s cooldown during which Redis is skipped after a failure (one log line per failure, then quiet). Redis is not part of `/readyz`.
+- **Why:** a rate limiter protects capacity; losing it briefly is better than refusing all traffic. The cooldown keeps an outage from adding a timeout to every request. Readiness stays independent so a Redis blip can't pull every instance out of service. Trade-off: while Redis is unavailable (including an exhausted Upstash quota), limits aren't enforced; `tokengate_ratelimit_decisions_total{result="redis_error"}` makes that visible. Budgets (step 2.4) fail closed instead, because they protect money.
+
+## D40. Rate limiting is required in prod and tested end to end in the image
+- **Options:** optional Redis everywhere; required in prod only.
+- **Choice:** prod refuses to start without `TOKENGATE_REDIS_URL` (as with auth). Locally it's optional and the gateway logs `ratelimit_disabled`. CI runs the built image in prod mode against real Postgres and Redis: migrate and issue a key with the image's own CLI, then smoke-test 401, 200 and 429.
+- **Why:** a production gateway without limits is a misconfiguration, not a mode. Testing the real image catches packaging mistakes (e.g. the Lua file not shipping) that unit tests can't.

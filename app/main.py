@@ -22,6 +22,7 @@ from app.db.pool import create_pool
 from app.providers.base import Provider
 from app.providers.mock import MockConfig, MockProvider
 from app.providers.router import ModelRouter
+from app.ratelimit.limiter import RateLimiter, create_redis
 from app.state import AppState, get_state
 from app.telemetry import metrics
 from app.telemetry.logging import configure_logging
@@ -71,6 +72,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ttl_s=state.settings.auth_cache_ttl_s,
             max_entries=state.settings.auth_cache_max_entries,
         )
+    if state.settings.redis_url is not None:
+        # Connects lazily, so a Redis outage at boot doesn't stop startup (rate limits fail open).
+        state.redis = create_redis(state.settings)
+        state.rate_limiter = RateLimiter(
+            state.redis,
+            key_prefix=state.settings.redis_key_prefix,
+            cooldown_s=state.settings.ratelimit_cooldown_s,
+            timeout_s=state.settings.redis_connect_timeout_s + state.settings.redis_timeout_s,
+            metrics=state.metrics,
+        )
+    else:
+        log.warning("ratelimit_disabled", reason="TOKENGATE_REDIS_URL is not set")
     state.providers = dict(state.provider_overrides or build_providers(state.settings))
     # Raises (and so stops startup) if a route points at a provider that doesn't exist.
     state.model_router = ModelRouter(state.settings.model_routes, state.providers)
@@ -87,6 +100,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await state.http_client.aclose()
         state.http_client = None
         state.key_store = None
+        state.rate_limiter = None
+        if state.redis is not None:
+            try:
+                await asyncio.wait_for(state.redis.aclose(), timeout=2)
+            except TimeoutError:
+                log.warning("redis_close_timed_out")
+            state.redis = None
         if state.db_pool is not None:
             # Bounded: don't let a stuck connection eat Cloud Run's 10 s shutdown window.
             try:

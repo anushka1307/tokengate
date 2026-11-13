@@ -36,6 +36,8 @@ from app.providers.base import (
     ProviderUsage,
     StreamEvent,
 )
+from app.ratelimit.dependency import enforce_rate_limit
+from app.ratelimit.limiter import RateLimitDecision
 from app.state import get_state
 from app.telemetry.metrics import Metrics
 from app.telemetry.middleware import current_provider_wait_s, track_provider_wait
@@ -79,6 +81,8 @@ async def create_chat_completion(
     body: ChatCompletionRequest,
     request: Request,
     principal: Principal | None = Depends(authenticate),  # noqa: B008 - FastAPI dependency
+    # Runs after authenticate (FastAPI reuses the same Principal); raises 429 when limited.
+    rate_limit: RateLimitDecision | None = Depends(enforce_rate_limit),  # noqa: B008
 ) -> Response:
     state = get_state(request.app)
     if state.model_router is None:
@@ -92,6 +96,8 @@ async def create_chat_completion(
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     headers = {"X-Provider": provider.name, "X-Cache": "miss"}
+    if rate_limit is not None and rate_limit.remaining is not None:
+        headers["X-RateLimit-Remaining"] = str(rate_limit.remaining)
     structlog.contextvars.bind_contextvars(model=body.model, provider=provider.name)
     recorder = _CallRecorder(state.metrics, provider.name, body.model)
 

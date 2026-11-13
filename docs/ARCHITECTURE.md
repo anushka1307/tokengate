@@ -2,7 +2,7 @@
 
 TODO: request-path diagram (auth → rate limit → cache → provider → accounting) at the end of Phase 1.
 
-Today (end of Phase 1): request context (request ID, timing, metrics) → body-size limit → schema validation → request limits → model router → provider (MockProvider) → JSON or SSE response. Also: `/healthz`, `/readyz`, protected `/metrics`; container built and smoke-tested in CI.
+Today (Phase 2, after step 2.3): request context (request ID, timing, metrics) → body-size limit → schema validation → API-key auth (Postgres, cached) → rate limit (Redis token buckets per key and tenant, fails open) → request limits → model router → provider (MockProvider) → JSON or SSE response. Also: `/healthz`, `/readyz` (checks Postgres, not Redis), protected `/metrics`; the image is smoke-tested in CI in prod mode against real Postgres and Redis.
 
 ## Request path (target)
 1. Auth: hashed tenant API key lookup
