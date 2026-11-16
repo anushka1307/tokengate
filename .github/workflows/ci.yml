@@ -198,6 +198,12 @@ jobs:
             | grep -oE 'tg_[A-Za-z0-9]{12}_[A-Za-z0-9]{43}')
           echo "::add-mask::$key"
           echo "API_KEY=$key" >> "$GITHUB_ENV"
+          # A tenant whose daily budget can't fit even one request: must get insufficient_quota.
+          run python -m app.admin create-tenant --name broke --rpm 5 --daily-tokens 1
+          broke=$(run python -m app.admin create-key --tenant broke --name ci \
+            | grep -oE 'tg_[A-Za-z0-9]{12}_[A-Za-z0-9]{43}')
+          echo "::add-mask::$broke"
+          echo "EXHAUSTED_API_KEY=$broke" >> "$GITHUB_ENV"
 
       - name: Start container (prod mode, read-only filesystem)
         run: |
@@ -212,7 +218,7 @@ jobs:
           done
           echo "container never became ready"; exit 1
 
-      - name: Smoke test (auth and rate limits on)
+      - name: Smoke test (auth, rate limits and budgets on)
         env:
           BASE_URL: http://localhost:8080
           CHECK_RATE_LIMIT: "1"  # tenant allows 5 rpm: keep sending until a 429 comes back

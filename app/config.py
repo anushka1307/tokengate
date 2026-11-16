@@ -80,9 +80,9 @@ class Settings(BaseSettings):
     redis_timeout_s: float = Field(default=0.25, gt=0, le=10)
     # Every key TokenGate writes starts with this, so a shared Redis stays tidy.
     redis_key_prefix: str = Field(default="tg:", pattern=r"^[a-z0-9:_-]{1,32}$")
-    # After a Redis failure, skip Redis (allow requests) for this long instead of paying the
-    # timeout on every request during an outage.
-    ratelimit_cooldown_s: float = Field(default=5.0, ge=0, le=300)
+    # After a Redis failure, skip Redis for this long instead of paying the timeout on every
+    # request during an outage: rate limits allow the request, budgets refuse it (503).
+    redis_cooldown_s: float = Field(default=5.0, ge=0, le=300)
 
     # /metrics needs "Authorization: Bearer <token>" when set. With no token, /metrics is open
     # in local/test and disabled (404) in prod (D21). SecretStr keeps it out of logs and reprs.

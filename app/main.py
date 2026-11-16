@@ -17,6 +17,7 @@ from app.api import chat
 from app.api.errors import install_error_handlers
 from app.api.limits import BodySizeLimitMiddleware
 from app.auth.store import KeyStore
+from app.budget.ledger import BudgetLedger
 from app.config import Settings
 from app.db.pool import create_pool
 from app.providers.base import Provider
@@ -78,12 +79,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state.rate_limiter = RateLimiter(
             state.redis,
             key_prefix=state.settings.redis_key_prefix,
-            cooldown_s=state.settings.ratelimit_cooldown_s,
+            cooldown_s=state.settings.redis_cooldown_s,
             timeout_s=state.settings.redis_connect_timeout_s + state.settings.redis_timeout_s,
             metrics=state.metrics,
         )
+        state.budget_ledger = BudgetLedger(
+            state.redis,
+            key_prefix=state.settings.redis_key_prefix,
+            timeout_s=state.settings.redis_connect_timeout_s + state.settings.redis_timeout_s,
+            cooldown_s=state.settings.redis_cooldown_s,
+            metrics=state.metrics,
+        )
     else:
-        log.warning("ratelimit_disabled", reason="TOKENGATE_REDIS_URL is not set")
+        log.warning("ratelimit_and_budgets_disabled", reason="TOKENGATE_REDIS_URL is not set")
     state.providers = dict(state.provider_overrides or build_providers(state.settings))
     # Raises (and so stops startup) if a route points at a provider that doesn't exist.
     state.model_router = ModelRouter(state.settings.model_routes, state.providers)
@@ -101,6 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state.http_client = None
         state.key_store = None
         state.rate_limiter = None
+        state.budget_ledger = None
         if state.redis is not None:
             try:
                 await asyncio.wait_for(state.redis.aclose(), timeout=2)

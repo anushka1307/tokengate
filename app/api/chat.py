@@ -1,13 +1,14 @@
 """POST /v1/chat/completions: the OpenAI-compatible front door.
 
-Request path (Phase 1): validate (schemas) -> limits -> route alias to provider -> call provider
--> package the answer in OpenAI's shape. Auth, rate limits, cache and failover slot in later.
+Request path: validate (schemas) -> authenticate -> rate limit -> request limits -> route alias to
+provider -> reserve daily budget -> call provider -> settle budget -> package the answer in
+OpenAI's shape. Cache and failover slot in later.
 """
 
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import structlog
 from fastapi import APIRouter, Depends, Request, Response
@@ -28,6 +29,12 @@ from app.api.schemas import (
 )
 from app.api.sse import DONE, EventStreamResponse, sse_event
 from app.auth.dependency import Principal, authenticate
+from app.budget.ledger import (
+    BudgetExhausted,
+    BudgetUnavailable,
+    Reservation,
+    estimate_input_tokens,
+)
 from app.providers.base import (
     Provider,
     ProviderError,
@@ -93,6 +100,10 @@ async def create_chat_completion(
     provider_request = to_provider_request(
         body, route.target_model, state.settings.max_completion_tokens
     )
+    reservation = await _reserve_budget(request, principal, body.input_chars, provider_request)
+    if reservation is not None:
+        # The output limit may have been shrunk to fit what's left of today's budget.
+        provider_request = replace(provider_request, max_output_tokens=reservation.output_tokens)
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     headers = {"X-Provider": provider.name, "X-Cache": "miss"}
@@ -112,6 +123,7 @@ async def create_chat_completion(
             include_usage,
             headers,
             recorder,
+            reservation,
         )
 
     try:
@@ -119,8 +131,10 @@ async def create_chat_completion(
             result = await provider.complete(provider_request)
     except ProviderError as exc:
         recorder.finish(exc.kind)
+        await _settle(reservation, 0)  # no answer: refund the whole reservation
         raise _provider_failure(exc) from exc
     recorder.finish("success", result.usage)
+    await _settle(reservation, result.usage.total_tokens)
 
     response = ChatCompletionResponse(
         id=completion_id,
@@ -167,6 +181,7 @@ async def _start_stream(
     include_usage: bool,
     headers: dict[str, str],
     recorder: _CallRecorder,
+    reservation: Reservation | None,
 ) -> Response:
     events = provider.stream(provider_request)
     # Wait for the first event BEFORE sending "200 OK", so a provider that fails immediately
@@ -178,9 +193,11 @@ async def _start_stream(
         await events.aclose()
         if isinstance(exc, ProviderError):
             recorder.finish(exc.kind)
+            await _settle(reservation, 0)  # nothing was generated: refund
             raise _provider_failure(exc) from exc
         if isinstance(exc, StopAsyncIteration):
             recorder.finish("upstream_error")
+            await _settle(reservation, 0)
             raise APIError(
                 502,
                 "The model provider returned an empty stream.",
@@ -190,7 +207,9 @@ async def _start_stream(
         recorder.finish("cancelled")
         raise
 
-    body = _sse_body(first, events, completion_id, created, model, include_usage, recorder)
+    body = _sse_body(
+        first, events, completion_id, created, model, include_usage, recorder, reservation
+    )
 
     async def cleanup() -> None:
         # Runs even if the body never started (e.g. the client vanished before headers went
@@ -209,6 +228,7 @@ async def _sse_body(
     model: str,
     include_usage: bool,
     recorder: _CallRecorder,
+    reservation: Reservation | None,
 ) -> AsyncGenerator[bytes, None]:
     def chunk(
         delta: ChunkDelta | None = None,
@@ -252,11 +272,55 @@ async def _sse_body(
                     error_body(failure.message, error_type=failure.error_type, code=failure.code)
                 )
                 return
+        # Settle before [DONE] (not in `finally`), so it never runs while the stream is being
+        # torn down. Without usage from the provider, the reservation is kept.
+        await _settle(reservation, usage.total_tokens if usage is not None else None)
         outcome = "success"
         yield DONE
     finally:
         await events.aclose()
         recorder.finish(outcome, usage)
+
+
+async def _reserve_budget(
+    request: Request,
+    principal: Principal | None,
+    input_chars: int,
+    provider_request: ProviderRequest,
+) -> Reservation | None:
+    """Set aside today's tokens for this call. None when budgets are off (local dev only)."""
+    ledger = get_state(request.app).budget_ledger
+    if principal is None or ledger is None:
+        return None
+    try:
+        return await ledger.reserve(
+            principal.tenant_id,
+            principal.daily_token_budget,
+            estimate_input_tokens(input_chars),
+            provider_request.max_output_tokens,
+        )
+    except BudgetExhausted as exc:
+        log.info("budget_exhausted", retry_after_s=exc.retry_after_s)
+        raise APIError(
+            429,
+            "This organization's daily token budget is used up. It resets at 00:00 UTC.",
+            code="insufficient_quota",
+            error_type="insufficient_quota",
+            headers={"Retry-After": str(exc.retry_after_s)},
+        ) from exc
+    except BudgetUnavailable as exc:
+        # Fail closed: without a budget check, no tokens are spent.
+        raise APIError(
+            503,
+            "Budget checks are temporarily unavailable. Please retry shortly.",
+            code="budget_unavailable",
+            error_type="api_error",
+        ) from exc
+
+
+async def _settle(reservation: Reservation | None, actual_tokens: int | None) -> None:
+    if reservation is not None:
+        await reservation.settle(actual_tokens)
 
 
 def _usage(usage: ProviderUsage) -> Usage:

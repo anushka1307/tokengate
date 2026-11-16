@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from starlette.applications import Starlette
 
 from app.auth.store import KeyStore
+from app.budget.ledger import BudgetLedger
 from app.config import Settings
 from app.providers.base import Provider
 from app.providers.router import ModelRouter
@@ -26,6 +27,7 @@ class AppState:
     key_store: KeyStore | None = None  # set when a database is configured
     redis: Redis | None = None  # None when no Redis is configured
     rate_limiter: RateLimiter | None = None  # None means no rate limiting (local dev only)
+    budget_ledger: BudgetLedger | None = None  # None means no budgets (local dev only)
     providers: dict[str, Provider] = field(default_factory=dict)
     model_router: ModelRouter | None = None
     metrics: Metrics = field(default_factory=Metrics)

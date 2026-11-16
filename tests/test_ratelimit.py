@@ -319,18 +319,28 @@ async def test_openai_sdk_raises_rate_limit_error(gateway: Gateway) -> None:
     assert info.value.code == "rate_limit_exceeded"
 
 
-async def test_requests_still_work_when_redis_is_down(pg: str, redis_prefix: str) -> None:
+async def test_redis_down_rate_limit_opens_but_budget_closes(pg: str, redis_prefix: str) -> None:
+    # The split policy (D39, D43): rate limiting lets the request through, then the daily budget
+    # can't be checked, so the request is refused before any model is called.
     settings, key = await start_gateway(pg, "redis://127.0.0.1:1/0", redis_prefix, rpm=1)
     app = create_app(settings)
     async with LifespanManager(app) as manager:
         transport = httpx.ASGITransport(app=manager.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
-            # rpm is 1, yet both pass: rate limiting fails open, and says nothing it can't know.
             for _ in range(2):
                 resp = await http.post(URL, json=CHAT, headers=bearer(key))
-                assert resp.status_code == 200
+                assert resp.status_code == 503
+                assert resp.json()["error"]["code"] == "budget_unavailable"
                 assert "x-ratelimit-remaining" not in resp.headers
             assert (await http.get("/readyz")).status_code == 200  # Redis isn't a readiness check
         metrics = get_state(app).metrics
-        assert decisions(metrics, "redis_error") == 1
-        assert decisions(metrics, "skipped_cooldown") == 1
+        assert decisions(metrics, "redis_error") == 1  # rate limit: failed open...
+        assert decisions(metrics, "skipped_cooldown") == 1  # ...then skipped Redis
+        budget = "tokengate_budget_decisions_total"
+        assert metrics.registry.get_sample_value(budget, {"result": "redis_error"}) == 1
+        assert metrics.registry.get_sample_value(budget, {"result": "skipped_cooldown"}) == 1
+        calls = metrics.registry.get_sample_value(
+            "tokengate_provider_requests_total",
+            {"provider": "mock", "model": "mock-1", "outcome": "success"},
+        )
+        assert calls is None  # the model was never called

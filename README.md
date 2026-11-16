@@ -36,6 +36,11 @@ minute of requests (`--rpm`), refilled continuously. Over the limit: `429` with 
 Every successful response carries `X-RateLimit-Remaining`. If Redis is down, requests are
 allowed (fail open) and `tokengate_ratelimit_decisions_total{result="redis_error"}` counts it.
 
+Each tenant also has a daily token budget (`--daily-tokens`, reset at 00:00 UTC). Before a call,
+the gateway reserves the estimated input plus the output limit (shrunk to fit what's left), then
+settles to the real usage. Out of budget: `429 insufficient_quota`. Unlike rate limits, budgets
+fail closed: if Redis is down, chat requests get `503 budget_unavailable`.
+
 ### API keys
 `/v1/chat/completions` requires `Authorization: Bearer tg_...` unless `TOKENGATE_AUTH=disabled`
 (local development only). With `TOKENGATE_DATABASE_URL` and `TOKENGATE_API_KEY_PEPPER` set:
