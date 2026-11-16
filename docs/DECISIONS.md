@@ -174,5 +174,25 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 
 ## D40. Rate limiting is required in prod and tested end to end in the image
 - **Options:** optional Redis everywhere; required in prod only.
-- **Choice:** prod refuses to start without `TOKENGATE_REDIS_URL` (as with auth). Locally it's optional and the gateway logs `ratelimit_disabled`. CI runs the built image in prod mode against real Postgres and Redis: migrate and issue a key with the image's own CLI, then smoke-test 401, 200 and 429.
+- **Choice:** prod refuses to start without `TOKENGATE_REDIS_URL` (as with auth). Locally it's optional and the gateway logs `ratelimit_and_budgets_disabled`. CI runs the built image in prod mode against real Postgres and Redis: migrate and issue a key with the image's own CLI, then smoke-test 401, 200 and 429.
 - **Why:** a production gateway without limits is a misconfiguration, not a mode. Testing the real image catches packaging mistakes (e.g. the Lua file not shipping) that unit tests can't.
+
+## D41. Daily budgets: reserve before the call, settle after
+- **Options:** count tokens only after each call (simple, but concurrent requests can all pass the check and overshoot by a lot); reserve the worst case first, then settle to real usage.
+- **Choice:** reserve estimated input + the output limit on the tenant's counter for today (UTC) in one atomic Lua script, then settle to the provider's reported usage. Provider failure before any output: full refund. Usage unknown (cancelled or broken stream): the reservation is kept. A failed settlement is logged and counted, never raised.
+- **Why:** concurrent requests can't jointly overshoot the budget (a test sends 20 requests that only fit 5 and exactly 5 pass). When unsure, the gateway charges the safe amount. Trade-off: in-flight reservations count as spent, so a tenant near its limit may see `insufficient_quota` while requests are running, and `Retry-After` (seconds to midnight UTC) is then an upper bound.
+
+## D42. Shrink the output limit to fit; estimate input at 4 characters per token
+- **Options:** refuse when the full output limit doesn't fit (with the 4,096 default, budgets under ~4K become unusable); shrink the limit to what's left.
+- **Choice:** the output limit sent to the provider becomes `min(requested, remaining - input estimate)`; refuse only when not even one output token fits. Input is estimated at `ceil(chars / 4)` until real tokenizers arrive with real providers (Phase 3).
+- **Why:** the model physically can't run past the budget, so overshoot is limited to the input estimate's error. Answers near the limit end early with `finish_reason: "length"`, which clients already handle.
+
+## D43. Budgets fail closed
+- **Options:** fail open like rate limits; fail closed.
+- **Choice:** if Redis can't be reached, refuse with 503 `budget_unavailable` before any provider is called, and skip Redis for `TOKENGATE_REDIS_COOLDOWN_S` (shared with rate limiting) so refusals are fast.
+- **Why:** budgets protect money; uncounted spending is worse than a short outage. Consequence of the split policy: with budgets on, a Redis outage stops chat requests even though rate limits fail open.
+
+## D44. Budget counters live in Redis, keyed by the gateway's UTC date
+- **Options:** Postgres (durable, but a write per request on a small free-tier database); Redis.
+- **Choice:** Redis counters `tg:budget:{tenant_id}:YYYY-MM-DD`, expiring after 48 h. The date comes from the gateway's clock so the key can be declared to the script, as Redis Cluster requires. Over the limit: 429 `insufficient_quota` (OpenAI's code; SDKs raise `RateLimitError`) with `Retry-After`.
+- **Why:** atomic and fast, and the same Redis already serves rate limits. Trade-off: if Redis loses its data, today's counters reset. A durable usage record in Postgres comes with cost accounting (Phase 4). Each request now costs up to 3 Redis commands (rate limit, reserve, settle; settle is skipped when usage matches the reservation exactly), about 166K requests a month on Upstash's free plan.

@@ -96,6 +96,18 @@ class Metrics:
             ["result"],
             registry=r,
         )
+        self.budget_decisions = Counter(
+            "tokengate_budget_decisions_total",
+            "Daily-budget reservations by result (allowed, exhausted, redis_error, "
+            "skipped_cooldown). Redis problems fail closed: the request is refused.",
+            ["result"],
+            registry=r,
+        )
+        self.budget_settle_errors = Counter(
+            "tokengate_budget_settle_errors_total",
+            "Settlements that couldn't reach Redis (the tenant keeps the full reservation).",
+            registry=r,
+        )
         build_info = Gauge(
             "tokengate_build_info", "Always 1; labels identify the build.", ["version"], registry=r
         )

@@ -4,6 +4,7 @@
 #   scripts/smoke.sh                          # against http://localhost:8000, auth disabled
 #   BASE_URL=http://localhost:8080 API_KEY=tg_... METRICS_TOKEN=... scripts/smoke.sh
 #   CHECK_RATE_LIMIT=1 API_KEY=tg_... scripts/smoke.sh   # also send requests until a 429
+#   EXHAUSTED_API_KEY=tg_... scripts/smoke.sh            # a key whose daily budget is used up
 #
 # Exits non-zero on the first failure. Uses the mock model only: no provider keys, no cost.
 # CHECK_RATE_LIMIT is for test deployments with a low limit; don't point it at real traffic.
@@ -14,6 +15,7 @@ METRICS_TOKEN="${METRICS_TOKEN:-}"
 MODEL="${MODEL:-mock-1}"
 API_KEY="${API_KEY:-}"
 CHECK_RATE_LIMIT="${CHECK_RATE_LIMIT:-0}"
+EXHAUSTED_API_KEY="${EXHAUSTED_API_KEY:-}"
 CURL=(curl --silent --show-error --fail-with-body --max-time 10)
 # The key goes in a header read from stdin (-H @-), so it never shows up in `ps` output.
 AUTH=()
@@ -64,6 +66,14 @@ if [[ -n "$METRICS_TOKEN" ]]; then
   [[ "$unauth" == "401" ]] && pass "/metrics without token -> 401" || fail "/metrics gave ${unauth}"
 else
   echo "  skip  /metrics (set METRICS_TOKEN to check it)"
+fi
+
+if [[ -n "$EXHAUSTED_API_KEY" ]]; then
+  quota=$(printf 'Authorization: Bearer %s\n' "$EXHAUSTED_API_KEY" \
+    | curl --silent --max-time 10 -D "$headers" -H @- "${BASE_URL}/v1/chat/completions" \
+      -H 'content-type: application/json' -d "$body")
+  grep -q '"insufficient_quota"' <<<"$quota" && grep -qE '^HTTP/[0-9.]+ 429' "$headers" \
+    && pass "budget used up -> 429 insufficient_quota" || fail "exhausted budget not refused"
 fi
 
 if [[ "$CHECK_RATE_LIMIT" == "1" ]]; then
