@@ -79,6 +79,17 @@ scripts/smoke.sh                 # BASE_URL / METRICS_TOKEN env vars to point it
 `deploy/cloudrun.yaml` describes the Cloud Run service (scale to zero, max 2 instances). It is
 not deployed yet.
 
+## Measuring overshoot
+Do several gateway instances together let through more than a tenant's limits? This starts real
+gateway processes against local Redis and Postgres (MockProvider, so it costs nothing) and
+prints one JSON line per run plus a summary table. Results are in `docs/RESULTS.md`.
+```bash
+createdb tokengate_bench          # once
+uv run python -m loadtest.overshoot --instances 2 4 --repeat 5
+```
+It refuses non-local Redis or Postgres URLs (D46). Override the defaults with
+`TOKENGATE_BENCH_DATABASE_URL` / `TOKENGATE_BENCH_REDIS_URL`.
+
 ## Metrics
 `GET /metrics` (Prometheus format). Requires `Authorization: Bearer $TOKENGATE_METRICS_TOKEN`
 when that is set; without a token it is open locally and disabled in prod.

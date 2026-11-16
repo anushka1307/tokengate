@@ -47,7 +47,7 @@ known-first-party = ["app"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["app", "tests"]
+files = ["app", "loadtest", "tests"]
 warn_unreachable = true
 
 # ---------- pytest ----------

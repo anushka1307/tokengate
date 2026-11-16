@@ -186,6 +186,7 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** refuse when the full output limit doesn't fit (with the 4,096 default, budgets under ~4K become unusable); shrink the limit to what's left.
 - **Choice:** the output limit sent to the provider becomes `min(requested, remaining - input estimate)`; refuse only when not even one output token fits. Input is estimated at `ceil(chars / 4)` until real tokenizers arrive with real providers (Phase 3).
 - **Why:** the model physically can't run past the budget, so overshoot is limited to the input estimate's error. Answers near the limit end early with `finish_reason: "length"`, which clients already handle.
+- **Measured (step 2.5):** the estimate can be gamed. A prompt of one-letter words is undercounted 2×, and 20 concurrent requests overshot a 3,000-token budget by 49% (docs/RESULTS.md). Follow-up, not done: estimate with `max(ceil(chars / 4), word count)` now, a real tokenizer with the providers in Phase 3.
 
 ## D43. Budgets fail closed
 - **Options:** fail open like rate limits; fail closed.
@@ -196,3 +197,13 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** Postgres (durable, but a write per request on a small free-tier database); Redis.
 - **Choice:** Redis counters `tg:budget:{tenant_id}:YYYY-MM-DD`, expiring after 48 h. The date comes from the gateway's clock so the key can be declared to the script, as Redis Cluster requires. Over the limit: 429 `insufficient_quota` (OpenAI's code; SDKs raise `RateLimitError`) with `Retry-After`.
 - **Why:** atomic and fast, and the same Redis already serves rate limits. Trade-off: if Redis loses its data, today's counters reset. A durable usage record in Postgres comes with cost accounting (Phase 4). Each request now costs up to 3 Redis commands (rate limit, reserve, settle; settle is skipped when usage matches the reservation exactly), about 166K requests a month on Upstash's free plan.
+
+## D45. How overshoot is measured
+- **Options:** count admitted requests against `capacity` only (wrong: the bucket refills during the burst); use the server's window (needs instrumentation in the gateway); use the client's window, first request sent to last response received.
+- **Choice:** the ceiling is `floor(capacity + rate × client_elapsed)`. The client window contains the server's, so the ceiling is generous and overshoot can only be under-reported by a fraction of a request. The baseline ("naive") gives each instance its own Redis key prefix instead of adding an in-memory limiter to `app/`.
+- **Why:** no measurement code in the gateway, and a reader can check every number from the JSON the script prints. The baseline exercises the same code path with only the sharing removed.
+
+## D46. Benchmarks run locally, against MockProvider only
+- **Options:** run against the deployed stack (Upstash, Neon); local only.
+- **Choice:** `loadtest/overshoot.py` refuses any Redis or Postgres URL that isn't localhost, and any `rediss://` URL. Instances always use MockProvider.
+- **Why:** one run sends thousands of Redis commands (about 3 per request), which would eat the Upstash free plan's 500K a month, and real models would bill. Measures the logic, not the network, which is what overshoot is about.
