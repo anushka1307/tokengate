@@ -29,17 +29,10 @@ log = structlog.get_logger("tokengate.budget")
 
 _SCRIPT = (Path(__file__).parent / "reserve.lua").read_text(encoding="utf-8")
 
-# No tokenizer yet, so input is estimated at ~4 characters per token (a common rule of thumb
-# for English). Settling replaces the estimate with the provider's real count.
-CHARS_PER_TOKEN = 4
 # A day's counter is kept a little past the day so late settlements still find it.
 COUNTER_TTL_S = 48 * 3600
 
 _REDIS_ERRORS = (RedisError, OSError, TimeoutError)
-
-
-def estimate_input_tokens(input_chars: int) -> int:
-    return max(1, math.ceil(input_chars / CHARS_PER_TOKEN))
 
 
 class BudgetExhausted(Exception):

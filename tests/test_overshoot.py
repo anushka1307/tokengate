@@ -5,6 +5,7 @@ import secrets
 
 import pytest
 
+from app.budget.estimate import estimate_text_tokens
 from loadtest.overshoot import (
     SHORT_WORDS_PROMPT,
     TEXT_PROMPT,
@@ -99,9 +100,11 @@ def test_remote_urls_are_refused(url: str) -> None:
 
 
 def test_prompts_have_the_intended_estimate_error() -> None:
-    # The gateway estimates ceil(chars / 4); MockProvider counts words.
+    # The old estimate, ceil(chars / 4), undercounted the short-words prompt (MockProvider
+    # counts words); the current one doesn't (D47). Both prompts stay as before/after cases.
     assert -(-len(TEXT_PROMPT) // 4) > len(TEXT_PROMPT.split())
     assert -(-len(SHORT_WORDS_PROMPT) // 4) < len(SHORT_WORDS_PROMPT.split())
+    assert estimate_text_tokens(SHORT_WORDS_PROMPT) >= len(SHORT_WORDS_PROMPT.split())
 
 
 async def test_end_to_end_shared_counters_hold_and_naive_ones_do_not(
