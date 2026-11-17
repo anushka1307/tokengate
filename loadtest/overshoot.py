@@ -21,9 +21,9 @@ Scenarios:
   fraction of one request.
 - ``budget-text`` / ``budget-short-words``: concurrent requests against a small daily budget.
   Overshoot = real tokens used (sum of ``usage.total_tokens`` the clients saw) minus the budget.
-  ``short-words`` uses a prompt of one-letter words, which the gateway's 4-chars-per-token
-  input estimate undercounts (MockProvider counts words), so it measures the overshoot that
-  estimate error allows (D42).
+  ``short-words`` uses a prompt of one-letter words, which the gateway's original
+  4-chars-per-token input estimate undercounted (MockProvider counts words): +49% in step 2.5.
+  It stays as a regression check for the current estimate (D47).
 
 Prints one JSON line per run, then a markdown summary with the worst case across repeats.
 Refuses non-local Redis or Postgres URLs: this sends thousands of commands per run, which would

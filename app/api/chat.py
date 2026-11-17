@@ -29,12 +29,8 @@ from app.api.schemas import (
 )
 from app.api.sse import DONE, EventStreamResponse, sse_event
 from app.auth.dependency import Principal, authenticate
-from app.budget.ledger import (
-    BudgetExhausted,
-    BudgetUnavailable,
-    Reservation,
-    estimate_input_tokens,
-)
+from app.budget.estimate import estimate_input_tokens
+from app.budget.ledger import BudgetExhausted, BudgetUnavailable, Reservation
 from app.providers.base import (
     Provider,
     ProviderError,
@@ -100,7 +96,7 @@ async def create_chat_completion(
     provider_request = to_provider_request(
         body, route.target_model, state.settings.max_completion_tokens
     )
-    reservation = await _reserve_budget(request, principal, body.input_chars, provider_request)
+    reservation = await _reserve_budget(request, principal, provider_request)
     if reservation is not None:
         # The output limit may have been shrunk to fit what's left of today's budget.
         provider_request = replace(provider_request, max_output_tokens=reservation.output_tokens)
@@ -285,7 +281,6 @@ async def _sse_body(
 async def _reserve_budget(
     request: Request,
     principal: Principal | None,
-    input_chars: int,
     provider_request: ProviderRequest,
 ) -> Reservation | None:
     """Set aside today's tokens for this call. None when budgets are off (local dev only)."""
@@ -296,7 +291,7 @@ async def _reserve_budget(
         return await ledger.reserve(
             principal.tenant_id,
             principal.daily_token_budget,
-            estimate_input_tokens(input_chars),
+            estimate_input_tokens(m.content for m in provider_request.messages),
             provider_request.max_output_tokens,
         )
     except BudgetExhausted as exc:

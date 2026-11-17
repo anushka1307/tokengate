@@ -186,7 +186,7 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** refuse when the full output limit doesn't fit (with the 4,096 default, budgets under ~4K become unusable); shrink the limit to what's left.
 - **Choice:** the output limit sent to the provider becomes `min(requested, remaining - input estimate)`; refuse only when not even one output token fits. Input is estimated at `ceil(chars / 4)` until real tokenizers arrive with real providers (Phase 3).
 - **Why:** the model physically can't run past the budget, so overshoot is limited to the input estimate's error. Answers near the limit end early with `finish_reason: "length"`, which clients already handle.
-- **Measured (step 2.5):** the estimate can be gamed. A prompt of one-letter words is undercounted 2×, and 20 concurrent requests overshot a 3,000-token budget by 49% (docs/RESULTS.md). Follow-up, not done: estimate with `max(ceil(chars / 4), word count)` now, a real tokenizer with the providers in Phase 3.
+- **Measured (step 2.5):** the estimate can be gamed. A prompt of one-letter words is undercounted 2×, and 20 concurrent requests overshot a 3,000-token budget by 49% (docs/RESULTS.md). Fixed in step 2.6 (D47): 0% on the same benchmark.
 
 ## D43. Budgets fail closed
 - **Options:** fail open like rate limits; fail closed.
@@ -207,3 +207,8 @@ Each entry lists the options, the choice, and why. Newest at the bottom.
 - **Options:** run against the deployed stack (Upstash, Neon); local only.
 - **Choice:** `loadtest/overshoot.py` refuses any Redis or Postgres URL that isn't localhost, and any `rediss://` URL. Instances always use MockProvider.
 - **Why:** one run sends thousands of Redis commands (about 3 per request), which would eat the Upstash free plan's 500K a month, and real models would bill. Measures the logic, not the network, which is what overshoot is about.
+
+## D47. A pessimistic per-kind input estimate instead of 4 characters per token
+- **Options:** `ceil(chars / 4)` (gamed: +49% with one-letter words); `max(chars / 4, words)` (still gamed by symbols and CJK text, which have no spaces); a real tokenizer now (a download, and it wouldn't be Gemini's or Groq's anyway); count each kind of text at or above what tokenizers charge.
+- **Choice:** ASCII letter/digit runs at 1 token per 4 characters rounded up per run, 1 per ASCII symbol, 2 per 3 bytes of non-ASCII text, whitespace free, +4 per message. Computed with `bytes.translate`/`count` (about 0.5 ms for 200K characters of English, 2 ms for emoji), so it runs inline on the event loop.
+- **Why:** closes the cheap attacks for a few lines of code. Trade-off: normal English is reserved about 40-50% above the old estimate (measured on two sample texts: +37% and +47%), so answers near the end of a budget are cut a little sooner (the settle refunds the difference). Random-looking strings can still be undercounted; real token counts in Phase 3 replace this.

@@ -6,6 +6,8 @@ Needs TOKENGATE_TEST_REDIS_URL (and TOKENGATE_TEST_DATABASE_URL for the HTTP tes
 import asyncio
 import io
 import json
+import math
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
@@ -25,12 +27,12 @@ from redis.asyncio import Redis
 
 from app.admin.cli import run as admin
 from app.auth.keys import KEY_PATTERN
+from app.budget.estimate import PER_MESSAGE_OVERHEAD, estimate_input_tokens, estimate_text_tokens
 from app.budget.ledger import (
     COUNTER_TTL_S,
     BudgetExhausted,
     BudgetLedger,
     BudgetUnavailable,
-    estimate_input_tokens,
     seconds_until_utc_midnight,
 )
 from app.config import Settings
@@ -100,11 +102,57 @@ async def bench(redis_url: str, redis_prefix: str) -> AsyncIterator[Bench]:
 # ---------------------------------------------------------------- pure helpers
 
 
-def test_input_estimate_is_about_four_characters_per_token() -> None:
-    assert estimate_input_tokens(0) == 1  # never zero
-    assert estimate_input_tokens(4) == 1
-    assert estimate_input_tokens(5) == 2
-    assert estimate_input_tokens(400) == 100
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("", 0),
+        ("hi", 1),
+        ("hello", 2),  # 5 letters: rounds up
+        ("hello world", 4),  # (10 letters + 3 per run * 2 runs) / 4
+        ("a a a", 3),  # every one-letter word costs a token
+        ("!?!?", 4),  # every symbol costs a token
+        ("漢字", 4),  # 6 UTF-8 bytes * 2/3
+        ("😀", 3),  # 4 bytes * 2/3, rounded up
+        ("é", 2),  # 2 bytes * 2/3, rounded up
+        ("   \n\t ", 0),  # whitespace is free
+    ],
+)
+def test_text_estimate_by_kind_of_text(text: str, expected: int) -> None:
+    assert estimate_text_tokens(text) == expected
+
+
+ATTACKS = {
+    "one-letter words": " ".join(["a"] * 500),
+    "symbols": "!?" * 500,
+    "chinese": "漢字テスト" * 200,
+    "emoji": "😀🎉" * 500,
+    "digits": " ".join(str(i % 10) for i in range(500)),
+}
+
+
+@pytest.mark.parametrize("text", ATTACKS.values(), ids=ATTACKS.keys())
+def test_cheap_attacks_are_never_estimated_below_the_old_rule_or_the_mock(text: str) -> None:
+    estimate = estimate_text_tokens(text)
+    assert estimate >= math.ceil(len(text) / 4)  # never laxer than the old 4-chars rule
+    assert estimate >= len(text.split())  # MockProvider's count (words)
+    non_space = sum(not c.isspace() for c in text)
+    if "a a" in text or not text.isascii():
+        # one token per visible character at least, which is what tokenizers charge here
+        assert estimate >= non_space
+
+
+def test_input_estimate_adds_per_message_overhead_and_is_never_zero() -> None:
+    assert estimate_input_tokens([]) == 1
+    assert estimate_input_tokens([""]) == PER_MESSAGE_OVERHEAD
+    assert estimate_input_tokens(["hi", "hi"]) == 2 * (PER_MESSAGE_OVERHEAD + 1)
+
+
+def test_estimate_is_fast_enough_to_run_on_the_event_loop() -> None:
+    worst = "😀" * 200_000  # the default max_input_chars, in the slowest kind of text
+    start = time.perf_counter()
+    estimate_text_tokens(worst)
+    # About 2 ms on an M-series laptop; the bound is loose so slow CI runners don't flake.
+    assert time.perf_counter() - start < 0.05
 
 
 @pytest.mark.parametrize(
@@ -367,7 +415,26 @@ async def test_a_stream_that_breaks_midway_keeps_the_reservation(make_gateway: A
         assert resp.status_code == 200  # headers were already sent; the error is in the stream
         assert '"upstream_error"' in resp.text
         # Usage is unknown, so the full reservation stays: input estimate + the 4096 cap.
-        assert await g.used() == estimate_input_tokens(2) + 4096
+        assert await g.used() == estimate_input_tokens(["hi"]) + 4096
+
+
+async def test_one_letter_words_no_longer_overspend_the_budget(make_gateway: Any) -> None:
+    """Step 2.5 measured +49% here with the old 4-chars-per-token estimate (docs/RESULTS.md)."""
+    budget = 3000
+    async for g in make_gateway(budget=budget):
+        body = {
+            "model": "mock-1",
+            "messages": [{"role": "user", "content": " ".join(["a"] * 200)}],
+            "max_completion_tokens": 50,
+        }
+        responses = await asyncio.gather(
+            *(g.http.post(URL, json=body, headers=bearer(g.key)) for _ in range(40))
+        )
+        assert {r.status_code for r in responses} <= {200, 429}
+        used = sum(r.json()["usage"]["total_tokens"] for r in responses if r.status_code == 200)
+        assert used > 0
+        assert used <= budget
+        assert await g.used() == used
 
 
 async def test_openai_sdk_sees_insufficient_quota(make_gateway: Any) -> None:
